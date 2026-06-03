@@ -154,7 +154,7 @@ def _search_care_homes_via_cqc(postcode: str, radius_miles: int, max_results: in
                 params["partnerCode"] = CQC_PARTNER_CODE
 
             resp = requests.get(
-                "https://api.cqc.org.uk/public/v1/locations",
+                "https://api.service.cqc.org.uk/public/v1/locations",
                 params=params,
                 headers=headers,
                 timeout=20,
@@ -174,7 +174,7 @@ def _search_care_homes_via_cqc(postcode: str, radius_miles: int, max_results: in
             seen_ids.add(loc_id)
             try:
                 detail_resp = requests.get(
-                    f"https://api.cqc.org.uk/public/v1/locations/{loc_id}",
+                    f"https://api.service.cqc.org.uk/public/v1/locations/{loc_id}",
                     params={"partnerCode": CQC_PARTNER_CODE} if CQC_PARTNER_CODE else None,
                     headers=headers,
                     timeout=10,

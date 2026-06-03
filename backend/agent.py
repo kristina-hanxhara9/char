@@ -50,6 +50,9 @@ SUPABASE_KEY = _real_env("SUPABASE_KEY")
 RESEND_API_KEY = _real_env("RESEND_API_KEY")
 EMAIL_FROM = os.environ.get("EMAIL_FROM", "YOPEY Befriender <hello@yopey.org>")
 CQC_PARTNER_CODE = os.environ.get("CQC_PARTNER_CODE", "").strip()
+# Subscription key from CQC API portal (apply at api-portal.service.cqc.org.uk).
+# Without this, CQC returns 403 — we fall back to OpenAI web search.
+CQC_SUBSCRIPTION_KEY = os.environ.get("CQC_SUBSCRIPTION_KEY", "").strip()
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "changeme")
 EMAIL_TOKEN_SECRET = os.environ.get("EMAIL_TOKEN_SECRET") or DASHBOARD_PASSWORD
 APP_BASE_URL = os.environ.get("APP_BASE_URL", "http://localhost:8000").rstrip("/")
@@ -119,15 +122,8 @@ def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float
     return R * 2 * math.asin(math.sqrt(a))
 
 
-def search_care_homes(postcode: str, radius_miles: int = 10, max_results: int = 5) -> dict:
-    """
-    Live CQC API search. Returns nearest care homes by haversine distance.
-
-    Note: the CQC public dataset does NOT include email addresses. The bot must
-    tell the user how to find them (call the home, or use carehome.co.uk).
-
-    Pre-loaded Supabase + PostGIS approach is the v1.1 upgrade for speed.
-    """
+def _search_care_homes_via_cqc(postcode: str, radius_miles: int, max_results: int) -> dict:
+    """Live CQC API search. Requires CQC_SUBSCRIPTION_KEY (apply at api-portal.service.cqc.org.uk)."""
     location = postcode_to_latlng(postcode)
     if "error" in location:
         return {"error": location["error"], "results": []}
@@ -138,10 +134,8 @@ def search_care_homes(postcode: str, radius_miles: int = 10, max_results: int = 
     care_homes: list[dict] = []
 
     headers = {}
-    if CQC_PARTNER_CODE:
-        # The CQC API uses partnerCode as a query param, not a header.
-        # Subscription key is needed only if you have one — public access works without.
-        pass
+    if CQC_SUBSCRIPTION_KEY:
+        headers["Ocp-Apim-Subscription-Key"] = CQC_SUBSCRIPTION_KEY
 
     # Filter by localAuthority first — drastically reduces the result set vs
     # paginating through all of England.
@@ -267,14 +261,91 @@ def search_care_homes(postcode: str, radius_miles: int = 10, max_results: int = 
     care_homes.sort(key=lambda x: x["distance_miles"])
     return {
         "search_area": local_authority,
-        "email_note": (
-            "Care home email addresses are NOT in the CQC public dataset. "
-            "To find an email: call the care home directly and ask for the manager's email, "
-            "OR search the care home by name on carehome.co.uk and use their 'Send Email' button, "
-            "OR check the care home's own website for a contact form."
-        ),
+        "source": "cqc",
         "results": care_homes[:max_results],
     }
+
+
+def _search_care_homes_via_web(postcode: str, max_results: int = 5) -> dict:
+    """
+    Fallback when CQC API isn't authorised. Uses gpt-4o-mini-search-preview to
+    find currently-operating UK care homes near the postcode via public web sources
+    (carehome.co.uk, CQC's public listings, etc.). Less structured than CQC API
+    but reliably available.
+    """
+    if not openai_client:
+        return {"error": "OpenAI not configured", "results": []}
+
+    location = postcode_to_latlng(postcode)
+    area = location.get("admin_district") if "error" not in location else postcode
+
+    prompt = (
+        f"Find up to {max_results} real, currently-operating UK care homes near "
+        f"postcode {postcode} (in {area}). Use carehome.co.uk, cqc.org.uk public "
+        f"listings, and the care homes' own websites. Return STRICT JSON only "
+        f"(no markdown, no commentary) in this exact shape:\n\n"
+        '{"care_homes": [\n'
+        '  {"name": "...", "address": "...", "postcode": "...", "phone": "...", '
+        '"manager": "the Manager", "cqc_rating": "Good|Outstanding|Requires improvement|Inadequate|Not yet rated|Unknown", '
+        '"distance_miles": 0.5, "website": "https://..." or null, "cqc_url": "https://www.cqc.org.uk/location/..." or null}\n'
+        "]}\n\n"
+        "Rules:\n"
+        "- ONLY include real, currently-listed care homes. Never invent.\n"
+        "- If you cannot find a phone number, use 'Not listed' (not a fake one).\n"
+        "- distance_miles should be your best estimate based on the addresses.\n"
+        "- Sort by ascending distance.\n"
+        "- If you cannot find any nearby, return {\"care_homes\": []}."
+    )
+
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini-search-preview",
+            messages=[{"role": "user", "content": prompt}],
+            web_search_options={},
+        )
+        text = (response.choices[0].message.content or "").strip()
+    except Exception as e:
+        return {"error": f"Web search error: {e}", "results": []}
+
+    # Extract JSON object (model sometimes wraps in markdown despite instructions)
+    json_match = re.search(r"\{[\s\S]*\}", text)
+    if not json_match:
+        return {"error": "Web search returned no parseable JSON", "results": [], "raw": text[:300]}
+    try:
+        data = json.loads(json_match.group(0))
+    except json.JSONDecodeError:
+        return {"error": "Web search returned malformed JSON", "results": [], "raw": text[:300]}
+
+    homes = data.get("care_homes") or []
+    # Normalise the manager field (web search rarely finds manager names)
+    for h in homes:
+        h.setdefault("manager", "the Manager")
+        h.setdefault("phone", "Not listed")
+        h.setdefault("cqc_rating", "Unknown")
+        h["source"] = "web_search"
+
+    return {
+        "search_area": area,
+        "source": "web_search",
+        "note": "Sourced from public web listings — phone or address may be slightly out of date. Always double-check before sending an email.",
+        "results": homes[:max_results],
+    }
+
+
+def search_care_homes(postcode: str, radius_miles: int = 10, max_results: int = 5) -> dict:
+    """
+    Find care homes near a UK postcode. Tries CQC API first if a subscription key
+    is configured; otherwise (or on CQC failure) falls back to OpenAI web search.
+    """
+    if CQC_SUBSCRIPTION_KEY:
+        result = _search_care_homes_via_cqc(postcode, radius_miles, max_results)
+        if result.get("results"):
+            return result
+        # CQC returned empty — fall through to web search
+        print(f"[search] CQC returned no results for {postcode}, falling back to web search")
+    else:
+        print(f"[search] No CQC_SUBSCRIPTION_KEY set, using web search for {postcode}")
+    return _search_care_homes_via_web(postcode, max_results)
 
 
 # ============================================================
@@ -550,9 +621,22 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def create_user(first_name: str, age: int, utm_source: str | None = None) -> dict:
+def create_user(
+    first_name: str,
+    age: int,
+    surname: Optional[str] = None,
+    email: Optional[str] = None,
+    postcode: Optional[str] = None,
+    utm_source: Optional[str] = None,
+) -> dict:
     """Insert a brand-new user from the onboard form. Returns the created row."""
-    payload = {"first_name": first_name, "age": age, "status": "new"}
+    payload: dict[str, Any] = {"first_name": first_name, "age": age, "status": "new"}
+    if surname:
+        payload["surname"] = surname
+    if email:
+        payload["email"] = email
+    if postcode:
+        payload["postcode"] = postcode
     if utm_source:
         payload["utm_source"] = utm_source
     result = supabase.table("users").insert(payload).execute()
@@ -1427,13 +1511,17 @@ app.add_middleware(
 
 class OnboardRequest(BaseModel):
     first_name: str = Field(min_length=1, max_length=50)
+    surname: Optional[str] = Field(default=None, max_length=50)
     age: int = Field(ge=16, le=120, description="Must be 16 or older")
+    email: Optional[EmailStr] = None
+    postcode: Optional[str] = Field(default=None, max_length=10)
     utm_source: Optional[str] = None
 
 
 class OnboardResponse(BaseModel):
     user_id: str
     first_name: str
+    postcode: Optional[str] = None
 
 
 class ChatRequest(BaseModel):
@@ -1629,10 +1717,21 @@ def onboard_endpoint(req: OnboardRequest):
     """Called by the pre-chat form. Creates user record."""
     _require_services()
     try:
-        user = create_user(first_name=req.first_name, age=req.age, utm_source=req.utm_source)
+        user = create_user(
+            first_name=req.first_name,
+            age=req.age,
+            surname=req.surname,
+            email=str(req.email) if req.email else None,
+            postcode=req.postcode,
+            utm_source=req.utm_source,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not create user: {e}")
-    return OnboardResponse(user_id=user["id"], first_name=user["first_name"])
+    return OnboardResponse(
+        user_id=user["id"],
+        first_name=user["first_name"],
+        postcode=user.get("postcode"),
+    )
 
 
 @app.post("/api/chat", response_model=ChatResponse)

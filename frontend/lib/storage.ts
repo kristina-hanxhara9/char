@@ -2,7 +2,7 @@
 const USER_KEY = "yopey_user";
 const PASS_KEY = "yopey_dash_pass";
 
-export type StoredUser = { user_id: string; first_name: string };
+export type StoredUser = { user_id: string; first_name: string; postcode?: string };
 
 export const userStorage = {
   get(): StoredUser | null {

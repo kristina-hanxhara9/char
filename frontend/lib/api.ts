@@ -3,13 +3,17 @@ const API_URL =
 
 export type OnboardPayload = {
   first_name: string;
+  surname?: string;
   age: number;
+  email?: string;
+  postcode?: string;
   utm_source?: string;
 };
 
 export type OnboardResponse = {
   user_id: string;
   first_name: string;
+  postcode?: string | null;
 };
 
 export async function onboard(

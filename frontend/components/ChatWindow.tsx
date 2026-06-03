@@ -20,7 +20,9 @@ export default function ChatWindow() {
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Load stored user — if missing, send to /onboard
+  // Load stored user — if missing, send to /onboard.
+  // If postcode is already on file, kick off an automatic care-home search so
+  // the teen lands on a real result instead of a question.
   useEffect(() => {
     const u = userStorage.get();
     if (!u) {
@@ -28,12 +30,37 @@ export default function ChatWindow() {
       return;
     }
     setUser(u);
-    setMessages([
-      {
-        role: "assistant",
-        content: `Hey ${u.first_name}! I'm the YOPEY Befriender helper. I'll help you find a local care home and get you started as a volunteer.\n\nFirst — what's your surname? Just so I have it on file.`,
-      },
-    ]);
+
+    if (u.postcode) {
+      setMessages([
+        {
+          role: "assistant",
+          content: `Hey ${u.first_name}! Let me find care homes near ${u.postcode}...`,
+        },
+      ]);
+      // Fire a hidden user message so the bot calls search_care_homes
+      (async () => {
+        setPending(true);
+        try {
+          const reply = await sendMessage(
+            u.user_id,
+            `Please find me 5 care homes near my postcode ${u.postcode}.`
+          );
+          setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
+        } catch (err: any) {
+          setError(err.message || "Couldn't load care homes. Try sending a message.");
+        } finally {
+          setPending(false);
+        }
+      })();
+    } else {
+      setMessages([
+        {
+          role: "assistant",
+          content: `Hey ${u.first_name}! What's your postcode? I'll find care homes near you.`,
+        },
+      ]);
+    }
   }, [router]);
 
   // Auto-scroll to bottom whenever messages change

@@ -1,0 +1,73 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* iOS: prevent auto-zoom when focusing inputs (requires font-size >= 16px) */
+input,
+textarea,
+select {
+  font-size: 16px;
+}
+
+html,
+body {
+  height: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  background: #fdf4ff;
+  color: #1f2937;
+}
+
+/* Safe-area insets for notched phones */
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.safe-top {
+  padding-top: env(safe-area-inset-top);
+}
+
+/* Smooth chat scroll */
+.chat-scroll {
+  scroll-behavior: smooth;
+  overscroll-behavior: contain;
+}
+
+/* Typing dots animation */
+.typing-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: #9ca3af;
+  margin: 0 2px;
+  animation: typingBounce 1.4s infinite;
+}
+.typing-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.typing-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes typingBounce {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-6px);
+    opacity: 1;
+  }
+}
+
+/* Preserve line breaks in chat messages */
+.chat-prose {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.chat-prose a {
+  color: #7c3aed;
+  text-decoration: underline;
+}

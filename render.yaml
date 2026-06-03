@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: yopey-backend
+    runtime: python
+    rootDir: backend
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: python agent.py
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.10
+      # Secrets — set these manually in the Render dashboard (sync: false means
+      # render.yaml won't overwrite or expose them)
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: DASHBOARD_PASSWORD
+        sync: false
+      - key: EMAIL_TOKEN_SECRET
+        sync: false
+      - key: APP_BASE_URL
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        value: YOPEY Befriender <hello@yopey.org>
+      - key: CQC_PARTNER_CODE
+        value: YOPEY

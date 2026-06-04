@@ -14,6 +14,7 @@ import math
 import os
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Union
 
@@ -490,6 +491,54 @@ def _save_search_to_cache(
         print(f"[search-cache] insert failed: {e}")
 
 
+def _enrich_with_emails(homes: list[dict], fallback_postcode: str) -> None:
+    """
+    Look up an email for every care home in parallel and mutate each dict
+    to include the email, plus metadata about its confidence.
+
+    Cache hits (verified Tony-seeded contacts + prior lookups) cost nothing.
+    Uncached lookups go to OpenAI web search (~$0.025 each). Parallel so the
+    user doesn't wait 15s for 5 sequential lookups.
+
+    Defined as a closure-free helper so search_care_homes can call it on every
+    fresh result, baking emails directly into the cached payload — the LLM
+    then never has to invoke find_care_home_email separately just to list.
+    """
+    if not homes:
+        return
+
+    def lookup(home: dict) -> dict:
+        manager = home.get("manager") or ""
+        # If the manager string is the "(not listed)" sentinel, don't pass it
+        # to the email search — the model would treat it as a real name.
+        clean_manager = (
+            manager if manager and "not listed" not in manager.lower() else None
+        )
+        return find_email_via_web_search(
+            care_home_name=home["name"],
+            town_or_postcode=home.get("postcode") or fallback_postcode,
+            manager_name=clean_manager,
+        )
+
+    # max_workers=5 matches our typical max_results — caps concurrent OpenAI calls
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        try:
+            email_results = list(executor.map(lookup, homes))
+        except Exception as e:
+            print(f"[search] email enrichment failed: {e}")
+            return
+
+    for home, er in zip(homes, email_results):
+        if er.get("found"):
+            home["email"] = er.get("email")
+            home["email_verified"] = bool(er.get("verified"))
+            home["email_is_generic"] = bool(er.get("is_generic_inbox"))
+            home["email_source"] = er.get("source")
+        else:
+            home["email"] = None
+            home["email_reason"] = er.get("reason") or "Not found"
+
+
 def search_care_homes(postcode: str, radius_miles: int = 10, max_results: int = 5) -> dict:
     """
     Find care homes near a UK postcode. Tries CQC API first if a subscription key
@@ -499,8 +548,9 @@ def search_care_homes(postcode: str, radius_miles: int = 10, max_results: int = 
       • bad postcodes return a clean error immediately (no wasted OpenAI calls)
       • CQC + web paths share one postcodes.io HTTP request
 
-    Successful results are cached in care_home_searches for 7 days so repeated
-    lookups for the same postcode are free (avoids the ~$0.025 web-search bill).
+    Successful results are enriched with per-home emails (cached) and then
+    cached themselves for 7 days. Repeated lookups for the same postcode
+    return instantly with full email data baked in.
     """
     # Cache hit short-circuits everything — instant, free.
     cached = _check_search_cache(postcode, radius_miles, max_results)
@@ -525,6 +575,7 @@ def search_care_homes(postcode: str, radius_miles: int = 10, max_results: int = 
             # Partial success: strip the error key so the LLM doesn't see a
             # confusing "error + results" envelope.
             result.pop("error", None)
+            _enrich_with_emails(result["results"], postcode)
             _save_search_to_cache(postcode, radius_miles, max_results, result)
             return result
         print(f"[search] CQC returned no results for {redact_postcode(postcode)}, falling back to web search")
@@ -533,6 +584,8 @@ def search_care_homes(postcode: str, radius_miles: int = 10, max_results: int = 
     result = _search_care_homes_via_web(
         postcode, max_results, radius_miles=radius_miles, prefetched_location=location
     )
+    if result.get("results"):
+        _enrich_with_emails(result["results"], postcode)
     _save_search_to_cache(postcode, radius_miles, max_results, result)
     return result
 

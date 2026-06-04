@@ -58,13 +58,20 @@ Per-field rules — if a field is missing/unknown, just OMIT that line entirely
   🌐 website link → omit if website is null
   🔗 CQC profile  → omit if cqc_url is null
 
-EMAIL LINE — use the home's `email`, `email_verified`, `email_is_generic` fields:
+EMAIL LINE — use the home's `email`, `email_verified`, `email_is_generic`,
+and `carehome_co_uk_url` fields:
 
   • email present + email_verified: true  → 📧 email@home.com (verified)
   • email present + email_is_generic: true → 📧 info@home.com (general inbox)
   • email present, otherwise             → 📧 j.smith@home.com
-  • email is null                        → 📧 No public email — call them or
-                                              try [carehome.co.uk](https://www.carehome.co.uk)
+  • email is null                        → 📧 No public email — use
+                                              [Send Email on carehome.co.uk]({carehome_co_uk_url})
+                                              or call them
+
+The carehome.co.uk link should ALWAYS appear when email is null. Use the
+home's actual carehome_co_uk_url value (NOT the generic homepage). This
+gives the teen a one-click route via carehome.co.uk's official Send Email
+form, which delivers to the care home without exposing the address.
 
 Important rules:
  • NEVER invent or pattern-generate an email like manager@carehomename.co.uk.

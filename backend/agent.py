@@ -518,6 +518,7 @@ def _enrich_with_emails(homes: list[dict], fallback_postcode: str) -> None:
             care_home_name=home["name"],
             town_or_postcode=home.get("postcode") or fallback_postcode,
             manager_name=clean_manager,
+            website=home.get("website"),
         )
 
     # max_workers=5 matches our typical max_results — caps concurrent OpenAI calls
@@ -526,7 +527,7 @@ def _enrich_with_emails(homes: list[dict], fallback_postcode: str) -> None:
             email_results = list(executor.map(lookup, homes))
         except Exception as e:
             print(f"[search] email enrichment failed: {e}")
-            return
+            email_results = [{"found": False} for _ in homes]
 
     for home, er in zip(homes, email_results):
         if er.get("found"):
@@ -537,6 +538,15 @@ def _enrich_with_emails(homes: list[dict], fallback_postcode: str) -> None:
         else:
             home["email"] = None
             home["email_reason"] = er.get("reason") or "Not found"
+
+        # Always include a carehome.co.uk search URL — works as a one-click
+        # "Send a message via carehome.co.uk" fallback when no email found.
+        # ToS-compliant: we're linking to their search, not scraping it.
+        if not home.get("carehome_co_uk_url") and home.get("name"):
+            home["carehome_co_uk_url"] = (
+                "https://www.carehome.co.uk/search.cfm?searchquery="
+                + requests.utils.quote(home["name"])
+            )
 
 
 def search_care_homes(postcode: str, radius_miles: int = 10, max_results: int = 5) -> dict:
@@ -705,10 +715,99 @@ def _save_email_to_cache(
         print(f"[email-cache] insert failed: {e}")
 
 
+# Domains that show up in scraped HTML but aren't the care home's contact email
+# (third-party analytics, page builders, etc.). Filtered out by the scraper.
+SCRAPE_NOISE_DOMAINS = {
+    "sentry.io",
+    "googletagmanager.com",
+    "google-analytics.com",
+    "wixpress.com",
+    "squarespace.com",
+    "wordpress.com",
+    "godaddy.com",
+    "domain.com",
+    "example.com",
+    "yourdomain.com",
+}
+
+
+def _scrape_email_from_website(website: Optional[str]) -> Optional[str]:
+    """
+    Fetch a care home's own website + common contact pages, regex-extract the
+    first plausible email. Free and deterministic — no LLM involved, so no
+    hallucination risk and no per-call cost. Catches the many small care home
+    sites that display 'info@<home>.co.uk' directly on their homepage or
+    /contact page.
+    """
+    if not website:
+        return None
+
+    url = website.strip()
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    paths_to_try = ["", "/contact", "/contact-us", "/about/contact", "/about-us", "/about"]
+    candidates: list[str] = []
+
+    for path in paths_to_try:
+        try:
+            full_url = url.rstrip("/") + path
+            resp = requests.get(
+                full_url,
+                timeout=8,
+                headers={
+                    "User-Agent": (
+                        "YOPEY Befriender Bot (+https://www.yopeybefriender.org); "
+                        "looking for contact email on behalf of a young volunteer"
+                    )
+                },
+                allow_redirects=True,
+            )
+        except Exception:
+            continue
+        if resp.status_code >= 400:
+            continue
+
+        html = resp.text
+
+        # Prefer mailto: links (semantic, intentional)
+        for m in re.finditer(r'mailto:([\w.+-]+@[\w-]+\.[\w.-]+)', html, re.IGNORECASE):
+            candidates.append(m.group(1))
+
+        # Plus any bare email patterns in the HTML
+        for m in EMAIL_RE.finditer(html):
+            candidates.append(m.group(0))
+
+        if candidates:
+            # No need to keep fetching other paths once we have hits
+            break
+
+    # Filter noise domains + de-dupe while preserving order
+    seen: set[str] = set()
+    filtered: list[str] = []
+    for c in candidates:
+        c_lower = c.lower()
+        domain = c_lower.split("@", 1)[-1]
+        if any(noise in domain for noise in SCRAPE_NOISE_DOMAINS):
+            continue
+        if c_lower in seen:
+            continue
+        seen.add(c_lower)
+        filtered.append(c)
+
+    if not filtered:
+        return None
+
+    # Prefer non-generic addresses (s.smith@home.co.uk over info@home.co.uk)
+    personal = [e for e in filtered if not _looks_like_generic(e)]
+    return personal[0] if personal else filtered[0]
+
+
 def find_email_via_web_search(
     care_home_name: str,
     town_or_postcode: Optional[str] = None,
     manager_name: Optional[str] = None,
+    website: Optional[str] = None,
 ) -> dict:
     """
     1. Check the care_home_emails cache (instant, free, trusted).
@@ -716,11 +815,35 @@ def find_email_via_web_search(
     3. Pull the email from its response with regex; cache it.
 
     Returns: {found: bool, email?: str, source: str, verified: bool, confidence: str}
+
+    Lookup order: cache → scrape care home website → OpenAI web search.
     """
     cached = _check_email_cache(care_home_name, postcode=town_or_postcode)
     if cached:
         cached["confidence"] = "verified" if cached["verified"] else "cached"
         return cached
+
+    # Free deterministic step: scrape the care home's own website. Often finds
+    # the info@/contact@ email displayed on the homepage. No LLM, no cost.
+    if website:
+        scraped = _scrape_email_from_website(website)
+        if scraped:
+            is_generic = _looks_like_generic(scraped)
+            _save_email_to_cache(
+                care_home_name=care_home_name,
+                email=scraped,
+                postcode=town_or_postcode,
+                source="website_scrape",
+                notes="generic inbox" if is_generic else None,
+            )
+            return {
+                "found": True,
+                "email": scraped,
+                "source": "website_scrape",
+                "verified": False,
+                "confidence": "high" if not is_generic else "medium",
+                "is_generic_inbox": is_generic,
+            }
 
     if not openai_client:
         return {"found": False, "reason": "OpenAI not configured"}

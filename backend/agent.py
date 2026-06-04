@@ -122,9 +122,14 @@ def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float
     return R * 2 * math.asin(math.sqrt(a))
 
 
-def _search_care_homes_via_cqc(postcode: str, radius_miles: int, max_results: int) -> dict:
+def _search_care_homes_via_cqc(
+    postcode: str,
+    radius_miles: int,
+    max_results: int,
+    prefetched_location: Optional[dict] = None,
+) -> dict:
     """Live CQC API search. Requires CQC_SUBSCRIPTION_KEY (apply at api-portal.service.cqc.org.uk)."""
-    location = postcode_to_latlng(postcode)
+    location = prefetched_location if prefetched_location is not None else postcode_to_latlng(postcode)
     if "error" in location:
         return {"error": location["error"], "results": []}
 
@@ -266,33 +271,95 @@ def _search_care_homes_via_cqc(postcode: str, radius_miles: int, max_results: in
     }
 
 
-def _search_care_homes_via_web(postcode: str, max_results: int = 5) -> dict:
+def _extract_json_object(text: str) -> Optional[dict]:
+    """
+    Walk the string looking for the first balanced {...} block that parses as JSON.
+    Tracks brace depth (ignoring braces inside strings) so it handles markdown
+    fences, prose containing braces, and multiple JSON objects in one response.
+    """
+    depth = 0
+    start = -1
+    in_string = False
+    escape = False
+    for i, ch in enumerate(text):
+        if escape:
+            escape = False
+            continue
+        if in_string:
+            if ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start != -1:
+                    try:
+                        return json.loads(text[start:i + 1])
+                    except json.JSONDecodeError:
+                        start = -1
+                        # Keep walking — there might be another candidate object
+                        continue
+    return None
+
+
+def _search_care_homes_via_web(
+    postcode: str,
+    max_results: int = 5,
+    radius_miles: int = 10,
+    prefetched_location: Optional[dict] = None,
+) -> dict:
     """
     Fallback when CQC API isn't authorised. Uses gpt-4o-mini-search-preview to
     find currently-operating UK care homes near the postcode via public web sources
     (carehome.co.uk, CQC's public listings, etc.). Less structured than CQC API
     but reliably available.
+
+    `prefetched_location` lets the dispatcher resolve the postcode once and
+    share the result with both CQC and web paths instead of re-calling
+    postcodes.io.
     """
     if not openai_client:
         return {"error": "OpenAI not configured", "results": []}
 
-    location = postcode_to_latlng(postcode)
-    area = location.get("admin_district") if "error" not in location else postcode
+    location = prefetched_location if prefetched_location is not None else postcode_to_latlng(postcode)
+    # Bail early on a known-bad postcode — don't burn a paid search-preview call
+    # only to have the model guess at an area that doesn't exist.
+    if "error" in location:
+        return {
+            "search_area": postcode,
+            "source": "web_search",
+            "error": location["error"],
+            "results": [],
+        }
+
+    area = location.get("admin_district") or postcode
 
     prompt = (
-        f"Find up to {max_results} real, currently-operating UK care homes near "
-        f"postcode {postcode} (in {area}). Use carehome.co.uk, cqc.org.uk public "
-        f"listings, and the care homes' own websites. Return STRICT JSON only "
-        f"(no markdown, no commentary) in this exact shape:\n\n"
+        f"Find up to {max_results} real, currently-operating UK care homes within "
+        f"about {radius_miles} miles of postcode {postcode} (in {area}). Use "
+        f"carehome.co.uk, cqc.org.uk public listings, and the care homes' own "
+        f"websites. Return STRICT JSON only (no markdown, no commentary) in this "
+        f"exact shape:\n\n"
         '{"care_homes": [\n'
         '  {"name": "...", "address": "...", "postcode": "...", "phone": "...", '
-        '"manager": "the Manager", "cqc_rating": "Good|Outstanding|Requires improvement|Inadequate|Not yet rated|Unknown", '
+        '"manager": "the Manager (not listed)", '
+        '"cqc_rating": "Good|Outstanding|Requires improvement|Inadequate|Not yet rated|Unknown", '
         '"distance_miles": 0.5, "website": "https://..." or null, "cqc_url": "https://www.cqc.org.uk/location/..." or null}\n'
         "]}\n\n"
         "Rules:\n"
         "- ONLY include real, currently-listed care homes. Never invent.\n"
         "- If you cannot find a phone number, use 'Not listed' (not a fake one).\n"
-        "- distance_miles should be your best estimate based on the addresses.\n"
+        f"- distance_miles must be <= {radius_miles}. Exclude anything farther.\n"
+        "- If the manager's name is unknown, leave it as 'the Manager (not listed)'.\n"
         "- Sort by ascending distance.\n"
         "- If you cannot find any nearby, return {\"care_homes\": []}."
     )
@@ -307,22 +374,22 @@ def _search_care_homes_via_web(postcode: str, max_results: int = 5) -> dict:
     except Exception as e:
         return {"error": f"Web search error: {e}", "results": []}
 
-    # Extract JSON object (model sometimes wraps in markdown despite instructions)
-    json_match = re.search(r"\{[\s\S]*\}", text)
-    if not json_match:
+    # Robust JSON extraction (handles markdown fences, multi-brace prose)
+    data = _extract_json_object(text)
+    if data is None:
         return {"error": "Web search returned no parseable JSON", "results": [], "raw": text[:300]}
-    try:
-        data = json.loads(json_match.group(0))
-    except json.JSONDecodeError:
-        return {"error": "Web search returned malformed JSON", "results": [], "raw": text[:300]}
 
     homes = data.get("care_homes") or []
-    # Normalise the manager field (web search rarely finds manager names)
+    # Normalise missing fields. Use "the Manager (not listed)" so the bot doesn't
+    # write "Dear the Manager," — the (not listed) qualifier signals unknown.
     for h in homes:
-        h.setdefault("manager", "the Manager")
+        h.setdefault("manager", "the Manager (not listed)")
         h.setdefault("phone", "Not listed")
         h.setdefault("cqc_rating", "Unknown")
         h["source"] = "web_search"
+
+    # Belt-and-braces: drop any model results that exceed the requested radius
+    homes = [h for h in homes if (h.get("distance_miles") or 0) <= radius_miles]
 
     return {
         "search_area": area,
@@ -336,16 +403,36 @@ def search_care_homes(postcode: str, radius_miles: int = 10, max_results: int = 
     """
     Find care homes near a UK postcode. Tries CQC API first if a subscription key
     is configured; otherwise (or on CQC failure) falls back to OpenAI web search.
+
+    Resolves the postcode ONCE up front so:
+      • bad postcodes return a clean error immediately (no wasted OpenAI calls)
+      • CQC + web paths share one postcodes.io HTTP request
     """
+    # Resolve once. If postcode is invalid, neither path can help — return now.
+    location = postcode_to_latlng(postcode)
+    if "error" in location:
+        return {
+            "search_area": postcode,
+            "source": "postcode_invalid",
+            "error": location["error"],
+            "results": [],
+        }
+
     if CQC_SUBSCRIPTION_KEY:
-        result = _search_care_homes_via_cqc(postcode, radius_miles, max_results)
+        result = _search_care_homes_via_cqc(
+            postcode, radius_miles, max_results, prefetched_location=location
+        )
         if result.get("results"):
+            # Partial success: strip the error key so the LLM doesn't see a
+            # confusing "error + results" envelope.
+            result.pop("error", None)
             return result
-        # CQC returned empty — fall through to web search
         print(f"[search] CQC returned no results for {postcode}, falling back to web search")
     else:
         print(f"[search] No CQC_SUBSCRIPTION_KEY set, using web search for {postcode}")
-    return _search_care_homes_via_web(postcode, max_results)
+    return _search_care_homes_via_web(
+        postcode, max_results, radius_miles=radius_miles, prefetched_location=location
+    )
 
 
 # ============================================================
@@ -624,12 +711,38 @@ def _now_iso() -> str:
 def create_user(
     first_name: str,
     age: int,
+    *,
     surname: Optional[str] = None,
     email: Optional[str] = None,
     postcode: Optional[str] = None,
     utm_source: Optional[str] = None,
 ) -> dict:
-    """Insert a brand-new user from the onboard form. Returns the created row."""
+    """
+    Create or update a user from the onboard form. Returns the row.
+
+    If `email` is provided and already exists in the users table, this updates
+    the existing row (refreshing name/age/postcode/surname) instead of failing
+    on the UNIQUE constraint. Re-onboarding with the same email is therefore a
+    legitimate flow — e.g. the teen clicked "New chat" or wiped localStorage.
+
+    All optional fields are keyword-only to prevent positional-arg drift.
+    """
+    # Look up by email first; on hit, update the existing row.
+    if email:
+        existing = supabase.table("users").select("*").eq("email", email).limit(1).execute()
+        if existing.data:
+            user_id = existing.data[0]["id"]
+            updates: dict[str, Any] = {"first_name": first_name, "age": age}
+            if surname:
+                updates["surname"] = surname
+            if postcode:
+                updates["postcode"] = postcode
+            if utm_source:
+                updates["utm_source"] = utm_source
+            update_user(user_id, **updates)
+            refreshed = get_user(user_id)
+            return refreshed if refreshed else existing.data[0]
+
     payload: dict[str, Any] = {"first_name": first_name, "age": age, "status": "new"}
     if surname:
         payload["surname"] = surname

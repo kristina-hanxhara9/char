@@ -9,6 +9,28 @@ import ChatInput from "@/components/ChatInput";
 import { sendMessage } from "@/lib/api";
 import { userStorage, type StoredUser } from "@/lib/storage";
 
+// Tracks whether we've already auto-searched for this user in this browser
+// session. Survives refreshes within the same tab, resets in a new tab —
+// which is the right cadence: don't re-spend a search per refresh, but DO
+// search again if the teen comes back tomorrow.
+function hasAlreadyAutoSearched(userId: string): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return sessionStorage.getItem(`yopey_autosearched_${userId}`) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function markAutoSearched(userId: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.setItem(`yopey_autosearched_${userId}`, "1");
+  } catch {
+    /* sessionStorage blocked (e.g. Safari private mode) — accept the cost */
+  }
+}
+
 type Msg = { role: "user" | "assistant"; content: string };
 
 export default function ChatWindow() {
@@ -20,10 +42,19 @@ export default function ChatWindow() {
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // Guard against React 18 StrictMode double-invoke + general
+  // belt-and-braces against effect re-runs.
+  const initFiredRef = useRef(false);
+
   // Load stored user — if missing, send to /onboard.
-  // If postcode is already on file, kick off an automatic care-home search so
-  // the teen lands on a real result instead of a question.
+  // If postcode is on file AND we haven't already auto-searched this session,
+  // kick off an automatic care-home search so the teen lands on a real result
+  // instead of a question. Refreshes / re-mounts within the same session reuse
+  // the prior search (no fresh OpenAI call, no history pollution).
   useEffect(() => {
+    if (initFiredRef.current) return;
+    initFiredRef.current = true;
+
     const u = userStorage.get();
     if (!u) {
       router.replace("/onboard");
@@ -31,7 +62,10 @@ export default function ChatWindow() {
     }
     setUser(u);
 
-    if (u.postcode) {
+    const shouldAutoSearch = Boolean(u.postcode) && !hasAlreadyAutoSearched(u.user_id);
+
+    if (shouldAutoSearch && u.postcode) {
+      markAutoSearched(u.user_id);
       setMessages([
         {
           role: "assistant",
@@ -53,6 +87,15 @@ export default function ChatWindow() {
           setPending(false);
         }
       })();
+    } else if (u.postcode) {
+      // Returning to the chat in the same session — show a generic greeting
+      // and let the teen pick up where they left off without re-running search.
+      setMessages([
+        {
+          role: "assistant",
+          content: `Welcome back, ${u.first_name}! What would you like to do next?`,
+        },
+      ]);
     } else {
       setMessages([
         {
@@ -93,6 +136,16 @@ export default function ChatWindow() {
 
   function handleEndChat() {
     if (confirm("Start a new chat? Your current chat history will stay saved.")) {
+      // Clear the per-session auto-search flag too so the next user (or the same
+      // user with a different postcode) gets a fresh search instead of the
+      // "Welcome back" greeting.
+      if (user && typeof window !== "undefined") {
+        try {
+          sessionStorage.removeItem(`yopey_autosearched_${user.user_id}`);
+        } catch {
+          /* ignore */
+        }
+      }
       userStorage.clear();
       router.push("/onboard");
     }

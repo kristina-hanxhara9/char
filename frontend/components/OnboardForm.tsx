@@ -21,6 +21,7 @@ export default function OnboardForm() {
   const [ageStr, setAgeStr] = useState("");
   const [email, setEmail] = useState("");
   const [postcode, setPostcode] = useState("");
+  const [consent, setConsent] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -35,10 +36,11 @@ export default function OnboardForm() {
     !Number.isNaN(ageNum) &&
     ageNum >= 16 &&
     ageNum <= 120 &&
-    email.trim() &&
+    email.trim().length > 0 &&
     !emailInvalid &&
-    postcode.trim() &&
+    postcode.trim().length > 0 &&
     !postcodeInvalid &&
+    consent &&
     !submitting;
 
   async function handleSubmit(e: FormEvent) {
@@ -209,6 +211,30 @@ export default function OnboardForm() {
         </p>
       </div>
 
+      <div className="rounded-xl border-2 border-gray-200 p-4 bg-purple-50/40">
+        <label className="flex gap-3 items-start cursor-pointer">
+          <input
+            type="checkbox"
+            checked={consent}
+            onChange={(e) => setConsent(e.target.checked)}
+            className="mt-1 w-5 h-5 accent-yopey-primary cursor-pointer"
+          />
+          <span className="text-sm text-gray-700 leading-relaxed">
+            I&apos;m happy for YOPEY to store this info + my chat with the bot so
+            it can find care homes and send me reminders. I&apos;ve read the{" "}
+            <a
+              href="/privacy"
+              target="_blank"
+              rel="noreferrer"
+              className="text-yopey-primary font-semibold underline"
+            >
+              privacy notice
+            </a>
+            .
+          </span>
+        </label>
+      </div>
+
       {error && (
         <div className="rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3">
           {error}
@@ -224,7 +250,11 @@ export default function OnboardForm() {
       </button>
 
       <p className="text-xs text-gray-500 text-center">
-        By continuing you agree we can store this information and chat history.
+        You can delete your data any time at{" "}
+        <a href="/privacy" className="underline">
+          /privacy
+        </a>
+        .
       </p>
     </form>
   );

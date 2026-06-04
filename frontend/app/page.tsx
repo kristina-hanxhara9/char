@@ -114,7 +114,12 @@ export default function LandingPage() {
       </section>
 
       <footer className="px-6 py-5 md:px-10 md:py-8 text-center text-sm text-gray-500">
-        Registered charity 1145573 · hello@yopey.org · 01440 821654
+        <div>Registered charity 1145573 · hello@yopey.org · 01440 821654</div>
+        <div className="mt-2">
+          <Link href="/privacy" className="text-yopey-primary hover:underline">
+            Privacy & your data
+          </Link>
+        </div>
       </footer>
     </main>
   );

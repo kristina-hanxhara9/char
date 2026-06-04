@@ -49,6 +49,19 @@ export async function fetchUser(user_id: string): Promise<UserMe> {
   return res.json();
 }
 
+export async function deleteAccount(
+  user_id: string
+): Promise<{ status: string; deleted_rows: Record<string, number> }> {
+  const res = await fetch(`${API_URL}/api/user/${user_id}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `Delete failed (${res.status})`);
+  }
+  return res.json();
+}
+
 export async function sendMessage(
   user_id: string,
   message: string

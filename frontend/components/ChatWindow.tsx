@@ -178,13 +178,21 @@ export default function ChatWindow() {
           <Link href="/" className="font-bold text-lg text-yopey-primaryDark">
             YOPEY
           </Link>
-          <button
-            type="button"
-            onClick={handleEndChat}
-            className="text-sm text-gray-500 hover:text-yopey-primary px-3 py-1.5 rounded-lg min-h-[44px] min-w-[44px]"
-          >
-            New chat
-          </button>
+          <div className="flex items-center gap-1">
+            <Link
+              href="/privacy"
+              className="text-sm text-gray-500 hover:text-yopey-primary px-3 py-1.5 rounded-lg min-h-[44px] grid place-items-center"
+            >
+              Privacy
+            </Link>
+            <button
+              type="button"
+              onClick={handleEndChat}
+              className="text-sm text-gray-500 hover:text-yopey-primary px-3 py-1.5 rounded-lg min-h-[44px] min-w-[44px]"
+            >
+              New chat
+            </button>
+          </div>
         </div>
       </header>
 

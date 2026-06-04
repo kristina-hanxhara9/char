@@ -384,6 +384,7 @@ def _search_care_homes_via_web(
             model="gpt-4o-mini-search-preview",
             messages=[{"role": "user", "content": prompt}],
             web_search_options={},
+            user="yopey-search-anon",  # care-home search isn't tied to a specific user
         )
         text = (response.choices[0].message.content or "").strip()
     except Exception as e:
@@ -510,9 +511,9 @@ def search_care_homes(postcode: str, radius_miles: int = 10, max_results: int = 
             result.pop("error", None)
             _save_search_to_cache(postcode, radius_miles, max_results, result)
             return result
-        print(f"[search] CQC returned no results for {postcode}, falling back to web search")
+        print(f"[search] CQC returned no results for {redact_postcode(postcode)}, falling back to web search")
     else:
-        print(f"[search] No CQC_SUBSCRIPTION_KEY set, using web search for {postcode}")
+        print(f"[search] No CQC_SUBSCRIPTION_KEY set, using web search for {redact_postcode(postcode)}")
     result = _search_care_homes_via_web(
         postcode, max_results, radius_miles=radius_miles, prefetched_location=location
     )
@@ -671,6 +672,7 @@ def find_email_via_web_search(
             model="gpt-4o-mini-search-preview",
             messages=[{"role": "user", "content": query}],
             web_search_options={},
+            user="yopey-email-lookup",  # not tied to a specific user
         )
         text = (response.choices[0].message.content or "").strip()
     except Exception as e:
@@ -841,6 +843,57 @@ TOOLS = [
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# ============================================================
+# LOG REDACTION (UK GDPR Art 5.1.f — integrity + confidentiality)
+# Render captures stdout indefinitely, so we never log raw PII.
+# Use these helpers in print statements anywhere a value could
+# identify a user or third party.
+# ============================================================
+
+def redact_email(email: Optional[str]) -> str:
+    """'sarah@example.com' -> 'sa***@example.com'. None -> '<no-email>'."""
+    if not email or "@" not in email:
+        return "<no-email>"
+    local, domain = email.split("@", 1)
+    if len(local) <= 2:
+        return f"***@{domain}"
+    return f"{local[:2]}***@{domain}"
+
+
+def redact_postcode(postcode: Optional[str]) -> str:
+    """'W13 8RB' -> 'W13 ***'. Outward code is OK to log (regional, not personal)."""
+    if not postcode:
+        return "<no-postcode>"
+    cleaned = postcode.strip().upper()
+    if " " in cleaned:
+        return f"{cleaned.split()[0]} ***"
+    return f"{cleaned[:-3]} ***" if len(cleaned) > 3 else "***"
+
+
+def redact_id(value: Optional[str]) -> str:
+    """UUID -> first 8 chars, enough to grep server-side without exposing the full token."""
+    if not value:
+        return "<no-id>"
+    return value[:8]
+
+
+def openai_user_hash(user_id: Optional[str]) -> str:
+    """
+    Per-user identifier passed to OpenAI as the `user` parameter so they can
+    flag abusive patterns at the account level. Hashed so OpenAI never sees
+    the actual user_id (which is a session token in our system).
+
+    Per OpenAI docs: passing this does NOT cause your data to be retained
+    differently — API data is still excluded from training by default since
+    March 2023 (see https://help.openai.com/en/articles/5722486).
+    """
+    if not user_id:
+        return "anonymous"
+    return "yopey-" + hashlib.sha256(
+        (user_id + ":" + EMAIL_TOKEN_SECRET).encode()
+    ).hexdigest()[:16]
 
 
 def create_user(
@@ -1368,7 +1421,7 @@ def send_post_match_email(user: dict, contact: dict, stage_idx: int) -> bool:
     """Send one stage of the post-match drip. Returns True if sent."""
     stage_def = POST_MATCH_SCHEDULE[stage_idx]
     if not user.get("email"):
-        print(f"[post-match] user {user['id']} has no email, skipping stage {stage_def['stage']}")
+        print(f"[post-match] user {redact_id(user['id'])} has no email, skipping stage {stage_def['stage']}")
         return False
     subject, text_body, html_body = render_post_match_email(stage_def, user, contact)
     return send_email(user["email"], subject, text_body, html=html_body)
@@ -1392,7 +1445,7 @@ def send_post_match_welcome(user_id: str, contact: dict) -> None:
             matched_at=_now_iso(),
             status="matched",
         )
-        print(f"[post-match] Welcome sent to {user['email']} for {contact['care_home_name']}")
+        print(f"[post-match] Welcome sent to user {redact_id(user_id)} ({redact_email(user['email'])})")
 
 
 def send_post_match_drip() -> int:
@@ -1448,7 +1501,7 @@ def send_post_match_drip() -> int:
                     update_user(user["id"], post_match_stage=nudge["stage"])
                     sent_count += 1
                     print(
-                        f"[post-match] Stage {nudge['stage']} sent to {user['email']} "
+                        f"[post-match] Stage {nudge['stage']} sent to {redact_email(user['email'])} "
                         f"({nudge['days']} days since match)"
                     )
                 break
@@ -1459,7 +1512,7 @@ def send_post_match_drip() -> int:
 def send_email(to_email: str, subject: str, body: str, html: Optional[str] = None) -> bool:
     """Send via Resend (text + optional HTML). Returns True on success."""
     if not RESEND_API_KEY:
-        print(f"[email] No RESEND_API_KEY — would have sent to {to_email}: {subject}")
+        print(f"[email] No RESEND_API_KEY — would have sent to {redact_email(to_email)}: {subject}")
         return False
     try:
         import resend
@@ -1475,7 +1528,7 @@ def send_email(to_email: str, subject: str, body: str, html: Optional[str] = Non
         resend.Emails.send(payload)
         return True
     except Exception as e:
-        print(f"[email] Failed to send to {to_email}: {e}")
+        print(f"[email] Failed to send to {redact_email(to_email)}: {e}")
         return False
 
 
@@ -1516,8 +1569,8 @@ def send_nudge_reminders() -> int:
                     ).eq("id", contact["id"]).execute()
                     sent_count += 1
                     print(
-                        f"[nudge] Stage {stage_def['stage']} sent to {user['email']} "
-                        f"re {contact['care_home_name']}"
+                        f"[nudge] Stage {stage_def['stage']} sent to "
+                        f"{redact_email(user['email'])} (user {redact_id(user['id'])})"
                     )
                 break
 
@@ -1694,6 +1747,7 @@ def chat(user_message: str, user_id: str) -> str:
         tools=TOOLS,
         tool_choice="auto",
         temperature=0.7,
+        user=openai_user_hash(user_id),
         max_tokens=800,
     )
 
@@ -1727,6 +1781,7 @@ def chat(user_message: str, user_id: str) -> str:
             messages=[{"role": "system", "content": sys_prompt}, *_trim_history(history)],
             temperature=0.7,
             max_tokens=800,
+            user=openai_user_hash(user_id),
         )
         assistant_reply = follow_up.choices[0].message.content or ""
     else:
@@ -1994,6 +2049,47 @@ def user_me_endpoint(user_id: str):
         postcode=user.get("postcode"),
         status=user.get("status"),
     )
+
+
+class DeleteAccountResponse(BaseModel):
+    status: str
+    deleted_rows: dict
+
+
+@app.delete("/api/user/{user_id}", response_model=DeleteAccountResponse)
+def delete_user_endpoint(user_id: str):
+    """
+    UK GDPR Art 17 (Right to Erasure). Cascades to all related rows.
+
+    Auth model: knowing the user_id is the only credential — same as for
+    /api/chat. Because user_id is a UUIDv4 (~122 bits of entropy), it acts
+    as a session token and is only known to the device that completed
+    onboarding. If a teen wants to delete from a different device, they can
+    contact hello@yopey.org for a manual delete.
+    """
+    _require_services()
+    if not get_user(user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+
+    counts: dict[str, int] = {}
+    # ON DELETE CASCADE on the foreign keys handles contacts, conversations,
+    # training_progress, email_responses. We still tally what's about to go
+    # for the response body so the user has a receipt.
+    for table in ("contacts", "conversations", "training_progress", "email_responses"):
+        try:
+            res = supabase.table(table).select("id", count="exact").eq("user_id", user_id).execute()
+            counts[table] = res.count or 0
+        except Exception:
+            counts[table] = 0
+
+    try:
+        supabase.table("users").delete().eq("id", user_id).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {e}")
+
+    counts["users"] = 1
+    print(f"[gdpr] Account deleted for user {redact_id(user_id)}")
+    return DeleteAccountResponse(status="deleted", deleted_rows=counts)
 
 
 @app.post("/api/onboard", response_model=OnboardResponse)

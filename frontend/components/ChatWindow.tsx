@@ -6,7 +6,7 @@ import Link from "next/link";
 import MessageBubble from "@/components/MessageBubble";
 import TypingIndicator from "@/components/TypingIndicator";
 import ChatInput from "@/components/ChatInput";
-import { sendMessage } from "@/lib/api";
+import { fetchUser, sendMessage } from "@/lib/api";
 import { userStorage, type StoredUser } from "@/lib/storage";
 
 // Tracks whether we've already auto-searched for this user in this browser
@@ -55,25 +55,41 @@ export default function ChatWindow() {
     if (initFiredRef.current) return;
     initFiredRef.current = true;
 
-    const u = userStorage.get();
-    if (!u) {
+    const stored = userStorage.get();
+    if (!stored) {
       router.replace("/onboard");
       return;
     }
-    setUser(u);
 
-    const shouldAutoSearch = Boolean(u.postcode) && !hasAlreadyAutoSearched(u.user_id);
+    (async () => {
+      // Pull the canonical user record from the server so any changes made
+      // mid-chat (bot updating postcode/email via save_user_details, Tony
+      // updating from the dashboard, etc.) are reflected on this device.
+      let u: StoredUser = stored;
+      try {
+        const fresh = await fetchUser(stored.user_id);
+        u = {
+          user_id: fresh.user_id,
+          first_name: fresh.first_name,
+          postcode: fresh.postcode || undefined,
+        };
+        userStorage.set(u);
+      } catch {
+        // Server fetch failed (offline, server down) — carry on with localStorage
+      }
+      setUser(u);
 
-    if (shouldAutoSearch && u.postcode) {
-      markAutoSearched(u.user_id);
-      setMessages([
-        {
-          role: "assistant",
-          content: `Hey ${u.first_name}! Let me find care homes near ${u.postcode}...`,
-        },
-      ]);
-      // Fire a hidden user message so the bot calls search_care_homes
-      (async () => {
+      const shouldAutoSearch =
+        Boolean(u.postcode) && !hasAlreadyAutoSearched(u.user_id);
+
+      if (shouldAutoSearch && u.postcode) {
+        markAutoSearched(u.user_id);
+        setMessages([
+          {
+            role: "assistant",
+            content: `Hey ${u.first_name}! Let me find care homes near ${u.postcode}...`,
+          },
+        ]);
         setPending(true);
         try {
           const reply = await sendMessage(
@@ -86,24 +102,22 @@ export default function ChatWindow() {
         } finally {
           setPending(false);
         }
-      })();
-    } else if (u.postcode) {
-      // Returning to the chat in the same session — show a generic greeting
-      // and let the teen pick up where they left off without re-running search.
-      setMessages([
-        {
-          role: "assistant",
-          content: `Welcome back, ${u.first_name}! What would you like to do next?`,
-        },
-      ]);
-    } else {
-      setMessages([
-        {
-          role: "assistant",
-          content: `Hey ${u.first_name}! What's your postcode? I'll find care homes near you.`,
-        },
-      ]);
-    }
+      } else if (u.postcode) {
+        setMessages([
+          {
+            role: "assistant",
+            content: `Welcome back, ${u.first_name}! What would you like to do next?`,
+          },
+        ]);
+      } else {
+        setMessages([
+          {
+            role: "assistant",
+            content: `Hey ${u.first_name}! What's your postcode? I'll find care homes near you.`,
+          },
+        ]);
+      }
+    })();
   }, [router]);
 
   // Auto-scroll to bottom whenever messages change

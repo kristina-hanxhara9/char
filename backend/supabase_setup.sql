@@ -89,6 +89,21 @@ CREATE TABLE email_responses (
 
 CREATE INDEX idx_email_responses_user ON email_responses (user_id, stage);
 
+-- 7. CARE HOME SEARCHES — cache results for the same postcode so we don't
+-- re-pay for OpenAI web-search calls. 7-day TTL enforced at application layer.
+CREATE TABLE care_home_searches (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    postcode TEXT NOT NULL,              -- normalized: uppercase, no spaces
+    radius_miles INTEGER NOT NULL,
+    max_results INTEGER NOT NULL,
+    source TEXT,                         -- 'cqc' | 'web_search'
+    payload JSONB NOT NULL,
+    cached_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_care_home_searches_lookup
+    ON care_home_searches (postcode, radius_miles, max_results, cached_at DESC);
+
 
 -- ============================================================
 -- DASHBOARD VIEWS
@@ -186,3 +201,6 @@ ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE contacts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE conversations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE training_progress ENABLE ROW LEVEL SECURITY;
+ALTER TABLE care_home_emails ENABLE ROW LEVEL SECURITY;
+ALTER TABLE email_responses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE care_home_searches ENABLE ROW LEVEL SECURITY;

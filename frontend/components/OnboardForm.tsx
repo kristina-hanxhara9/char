@@ -5,7 +5,11 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { onboard } from "@/lib/api";
 import { userStorage } from "@/lib/storage";
 
-const UK_POSTCODE_RE = /^[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}$/i;
+// Permissive UK postcode pattern. Accepts the standard format, the Girobank
+// 'GIR 0AA' special case, and BFPO addresses. Authoritative validation happens
+// server-side via postcodes.io — this is just a lightweight UX check.
+const UK_POSTCODE_RE =
+  /^(?:GIR\s*0AA|BFPO\s*\d{1,4}|[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})$/i;
 
 export default function OnboardForm() {
   const router = useRouter();

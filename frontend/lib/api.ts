@@ -31,6 +31,24 @@ export async function onboard(
   return res.json();
 }
 
+export type UserMe = {
+  user_id: string;
+  first_name: string;
+  surname?: string | null;
+  email?: string | null;
+  postcode?: string | null;
+  status?: string | null;
+};
+
+export async function fetchUser(user_id: string): Promise<UserMe> {
+  const res = await fetch(`${API_URL}/api/user/${user_id}`);
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `Fetch user failed (${res.status})`);
+  }
+  return res.json();
+}
+
 export async function sendMessage(
   user_id: string,
   message: string

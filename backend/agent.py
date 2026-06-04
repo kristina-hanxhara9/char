@@ -350,16 +350,31 @@ def _search_care_homes_via_web(
         f"websites. Return STRICT JSON only (no markdown, no commentary) in this "
         f"exact shape:\n\n"
         '{"care_homes": [\n'
-        '  {"name": "...", "address": "...", "postcode": "...", "phone": "...", '
-        '"manager": "the Manager (not listed)", '
-        '"cqc_rating": "Good|Outstanding|Requires improvement|Inadequate|Not yet rated|Unknown", '
-        '"distance_miles": 0.5, "website": "https://..." or null, "cqc_url": "https://www.cqc.org.uk/location/..." or null}\n'
+        '  {\n'
+        '    "name": "...",\n'
+        '    "address": "...",\n'
+        '    "postcode": "...",\n'
+        '    "phone": "...",\n'
+        '    "manager": "the Manager (not listed)",\n'
+        '    "cqc_rating": "Good|Outstanding|Requires improvement|Inadequate|Not yet rated|Unknown",\n'
+        '    "distance_miles": 0.5,\n'
+        '    "website": "https://..." or null,\n'
+        '    "cqc_url": "https://www.cqc.org.uk/location/..." or null,\n'
+        '    "service_types": ["Care home with nursing"] or [],\n'
+        '    "specialisms": ["Dementia", "Older people"] or [],\n'
+        '    "number_of_beds": 42 or null,\n'
+        '    "last_inspection_date": "2023-05-10" or null\n'
+        '  }\n'
         "]}\n\n"
         "Rules:\n"
         "- ONLY include real, currently-listed care homes. Never invent.\n"
         "- If you cannot find a phone number, use 'Not listed' (not a fake one).\n"
         f"- distance_miles must be <= {radius_miles}. Exclude anything farther.\n"
         "- If the manager's name is unknown, leave it as 'the Manager (not listed)'.\n"
+        "- service_types are CQC categories (e.g. 'Care home with nursing', 'Care home without nursing').\n"
+        "- specialisms are the populations they serve (e.g. 'Dementia', 'Older people', 'Learning disability').\n"
+        "- last_inspection_date in ISO format YYYY-MM-DD if known, otherwise null.\n"
+        "- Use null (not empty string) for unknown numeric/date fields.\n"
         "- Sort by ascending distance.\n"
         "- If you cannot find any nearby, return {\"care_homes\": []}."
     )
@@ -380,12 +395,20 @@ def _search_care_homes_via_web(
         return {"error": "Web search returned no parseable JSON", "results": [], "raw": text[:300]}
 
     homes = data.get("care_homes") or []
-    # Normalise missing fields. Use "the Manager (not listed)" so the bot doesn't
-    # write "Dear the Manager," — the (not listed) qualifier signals unknown.
+    # Normalise missing fields so the shape matches CQC results (the bot's
+    # STEP-2 template assumes these keys exist). Use "the Manager (not listed)"
+    # so the bot doesn't write "Dear the Manager," — the (not listed) qualifier
+    # signals unknown.
     for h in homes:
         h.setdefault("manager", "the Manager (not listed)")
         h.setdefault("phone", "Not listed")
         h.setdefault("cqc_rating", "Unknown")
+        h.setdefault("service_types", [])
+        h.setdefault("specialisms", [])
+        h.setdefault("number_of_beds", None)
+        h.setdefault("last_inspection_date", None)
+        h.setdefault("website", None)
+        h.setdefault("cqc_url", None)
         h["source"] = "web_search"
 
     # Belt-and-braces: drop any model results that exceed the requested radius
@@ -399,6 +422,57 @@ def _search_care_homes_via_web(
     }
 
 
+SEARCH_CACHE_TTL_DAYS = 7
+
+
+def _normalize_postcode(postcode: str) -> str:
+    return postcode.strip().upper().replace(" ", "")
+
+
+def _check_search_cache(postcode: str, radius_miles: int, max_results: int) -> Optional[dict]:
+    """Return a recent cached search result, or None if expired/missing."""
+    if not supabase:
+        return None
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=SEARCH_CACHE_TTL_DAYS)).isoformat()
+    try:
+        res = (
+            supabase.table("care_home_searches")
+            .select("payload")
+            .eq("postcode", _normalize_postcode(postcode))
+            .eq("radius_miles", radius_miles)
+            .eq("max_results", max_results)
+            .gte("cached_at", cutoff)
+            .order("cached_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        print(f"[search-cache] lookup failed: {e}")
+        return None
+    if not res.data:
+        return None
+    payload = res.data[0]["payload"]
+    payload["cached"] = True
+    return payload
+
+
+def _save_search_to_cache(
+    postcode: str, radius_miles: int, max_results: int, result: dict
+) -> None:
+    if not supabase or not result.get("results"):
+        return
+    try:
+        supabase.table("care_home_searches").insert({
+            "postcode": _normalize_postcode(postcode),
+            "radius_miles": radius_miles,
+            "max_results": max_results,
+            "source": result.get("source"),
+            "payload": result,
+        }).execute()
+    except Exception as e:
+        print(f"[search-cache] insert failed: {e}")
+
+
 def search_care_homes(postcode: str, radius_miles: int = 10, max_results: int = 5) -> dict:
     """
     Find care homes near a UK postcode. Tries CQC API first if a subscription key
@@ -407,7 +481,15 @@ def search_care_homes(postcode: str, radius_miles: int = 10, max_results: int = 
     Resolves the postcode ONCE up front so:
       • bad postcodes return a clean error immediately (no wasted OpenAI calls)
       • CQC + web paths share one postcodes.io HTTP request
+
+    Successful results are cached in care_home_searches for 7 days so repeated
+    lookups for the same postcode are free (avoids the ~$0.025 web-search bill).
     """
+    # Cache hit short-circuits everything — instant, free.
+    cached = _check_search_cache(postcode, radius_miles, max_results)
+    if cached:
+        return cached
+
     # Resolve once. If postcode is invalid, neither path can help — return now.
     location = postcode_to_latlng(postcode)
     if "error" in location:
@@ -426,13 +508,16 @@ def search_care_homes(postcode: str, radius_miles: int = 10, max_results: int = 
             # Partial success: strip the error key so the LLM doesn't see a
             # confusing "error + results" envelope.
             result.pop("error", None)
+            _save_search_to_cache(postcode, radius_miles, max_results, result)
             return result
         print(f"[search] CQC returned no results for {postcode}, falling back to web search")
     else:
         print(f"[search] No CQC_SUBSCRIPTION_KEY set, using web search for {postcode}")
-    return _search_care_homes_via_web(
+    result = _search_care_homes_via_web(
         postcode, max_results, radius_miles=radius_miles, prefetched_location=location
     )
+    _save_search_to_cache(postcode, radius_miles, max_results, result)
+    return result
 
 
 # ============================================================
@@ -454,22 +539,72 @@ def _looks_like_generic(email: str) -> bool:
     return local in GENERIC_LOCAL_PARTS
 
 
+def _outward_code(postcode: Optional[str]) -> Optional[str]:
+    """Return the outward part of a UK postcode ('W13 8RB' -> 'W13'), or None."""
+    if not postcode:
+        return None
+    cleaned = postcode.strip().upper()
+    # Outward code = everything before the space, or the first 2-4 chars if no space
+    if " " in cleaned:
+        return cleaned.split()[0]
+    # Inward code is always 3 chars at the end (digit + 2 letters)
+    return cleaned[:-3] if len(cleaned) > 3 else cleaned
+
+
 def _check_email_cache(care_home_name: str, postcode: Optional[str] = None) -> Optional[dict]:
+    """
+    Look up a cached care home email. To avoid cross-region collisions when two
+    distinct homes share a name (e.g. 'Rose Court' in Cambridge vs Manchester),
+    we filter by outward postcode (W13, IP33, etc.) when one is provided. If no
+    postcode is given, we only return a hit if exactly ONE row matches the name.
+    """
     if not supabase:
         return None
-    q = supabase.table("care_home_emails").select("*").ilike(
-        "care_home_name", care_home_name
-    ).limit(1)
-    res = q.execute()
+    try:
+        res = (
+            supabase.table("care_home_emails")
+            .select("*")
+            .ilike("care_home_name", care_home_name)
+            .limit(10)
+            .execute()
+        )
+    except Exception as e:
+        print(f"[email-cache] lookup failed: {e}")
+        return None
     if not res.data:
         return None
-    row = res.data[0]
+
+    user_outward = _outward_code(postcode)
+    row: Optional[dict] = None
+
+    if user_outward:
+        # Prefer rows whose stored postcode matches the user's outward area
+        for r in res.data:
+            if _outward_code(r.get("postcode")) == user_outward:
+                row = r
+                break
+        # If nothing matched the area, prefer Tony-verified rows (curated, less risky)
+        if row is None:
+            verified = [r for r in res.data if r.get("verified")]
+            if len(verified) == 1:
+                row = verified[0]
+        # Still nothing safe — bail rather than risk a wrong-city email
+        if row is None:
+            return None
+    else:
+        # No postcode hint: only safe if exactly one row matches by name
+        if len(res.data) == 1:
+            row = res.data[0]
+        else:
+            return None
+
     try:
         supabase.table("care_home_emails").update(
             {"last_used_at": _now_iso()}
         ).eq("id", row["id"]).execute()
     except Exception:
         pass
+
     return {
         "found": True,
         "email": row["email"],
@@ -512,7 +647,7 @@ def find_email_via_web_search(
 
     Returns: {found: bool, email?: str, source: str, verified: bool, confidence: str}
     """
-    cached = _check_email_cache(care_home_name)
+    cached = _check_email_cache(care_home_name, postcode=town_or_postcode)
     if cached:
         cached["confidence"] = "verified" if cached["verified"] else "cached"
         return cached
@@ -1623,11 +1758,16 @@ app.add_middleware(
 # ---- Pydantic schemas ----
 
 class OnboardRequest(BaseModel):
+    """
+    The frontend collects all 5 fields on the form before chat begins, and the
+    chat / nudge / drip flows depend on every one of them. We enforce required
+    here so direct API callers (or stale clients) can't create broken users.
+    """
     first_name: str = Field(min_length=1, max_length=50)
-    surname: Optional[str] = Field(default=None, max_length=50)
+    surname: str = Field(min_length=1, max_length=50)
     age: int = Field(ge=16, le=120, description="Must be 16 or older")
-    email: Optional[EmailStr] = None
-    postcode: Optional[str] = Field(default=None, max_length=10)
+    email: EmailStr
+    postcode: str = Field(min_length=3, max_length=10)
     utm_source: Optional[str] = None
 
 
@@ -1823,6 +1963,37 @@ def email_response(token: str):
         return _handle_waiting_click(data)
 
     return HTMLResponse(content=RESPONSE_PAGE_INVALID, status_code=400)
+
+
+class UserMeResponse(BaseModel):
+    user_id: str
+    first_name: str
+    surname: Optional[str] = None
+    email: Optional[str] = None
+    postcode: Optional[str] = None
+    status: Optional[str] = None
+
+
+@app.get("/api/user/{user_id}", response_model=UserMeResponse)
+def user_me_endpoint(user_id: str):
+    """
+    Returns the canonical user record. The frontend calls this on chat-open
+    to sync localStorage with any server-side changes (e.g. the bot called
+    save_user_details to update the postcode mid-chat). Safe-fields only,
+    no PII the user didn't already supply themselves.
+    """
+    _require_services()
+    user = get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return UserMeResponse(
+        user_id=user["id"],
+        first_name=user["first_name"],
+        surname=user.get("surname"),
+        email=user.get("email"),
+        postcode=user.get("postcode"),
+        status=user.get("status"),
+    )
 
 
 @app.post("/api/onboard", response_model=OnboardResponse)

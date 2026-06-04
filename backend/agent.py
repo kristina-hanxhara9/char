@@ -375,6 +375,10 @@ def _search_care_homes_via_web(
         "- specialisms are the populations they serve (e.g. 'Dementia', 'Older people', 'Learning disability').\n"
         "- last_inspection_date in ISO format YYYY-MM-DD if known, otherwise null.\n"
         "- Use null (not empty string) for unknown numeric/date fields.\n"
+        "- cqc_url MUST be unique per care home — never reuse the same URL for two\n"
+        "  different homes. If you cannot find the correct CQC location ID for a\n"
+        "  home, use null instead of guessing or reusing another home's URL.\n"
+        "- website is the care home's OWN domain (not a directory listing).\n"
         "- Sort by ascending distance.\n"
         "- If you cannot find any nearby, return {\"care_homes\": []}."
     )
@@ -414,6 +418,18 @@ def _search_care_homes_via_web(
 
     # Belt-and-braces: drop any model results that exceed the requested radius
     homes = [h for h in homes if (h.get("distance_miles") or 0) <= radius_miles]
+
+    # De-duplicate cqc_url: the model occasionally returns the same CQC URL for
+    # two different homes. We can't tell which is right, so null all duplicates
+    # rather than show the wrong link.
+    seen_cqc_urls: set[str] = set()
+    for h in homes:
+        cqc_url = h.get("cqc_url")
+        if cqc_url:
+            if cqc_url in seen_cqc_urls:
+                h["cqc_url"] = None
+            else:
+                seen_cqc_urls.add(cqc_url)
 
     return {
         "search_area": area,

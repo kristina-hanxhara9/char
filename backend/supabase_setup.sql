@@ -10,8 +10,15 @@ CREATE TABLE users (
     surname TEXT,
     email TEXT UNIQUE,
     age INTEGER NOT NULL CHECK (age >= 16),
-    postcode TEXT,
-    school TEXT,
+    postcode TEXT,                               -- resolved search postcode (= home_postcode or school_postcode)
+    home_postcode TEXT,                          -- where they live
+    school_postcode TEXT,                        -- where they study (NULL if NEET)
+    school_name TEXT,                            -- school/college/uni name
+    phone TEXT,
+    is_student BOOLEAN,
+    search_preference TEXT
+        CHECK (search_preference IN ('home', 'school')),
+    school TEXT,                                 -- DEPRECATED — replaced by school_name
     stage TEXT,                                  -- 'sixth_form' or 'undergraduate'
     utm_source TEXT,                             -- optional: where the signup came from
     status TEXT DEFAULT 'new',                   -- new → searching → contacted → waiting → matched → active
@@ -103,6 +110,66 @@ CREATE TABLE care_home_searches (
 
 CREATE INDEX idx_care_home_searches_lookup
     ON care_home_searches (postcode, radius_miles, max_results, cached_at DESC);
+
+-- 8. SURVEY RESPONSES — Dementia Attitudes Scale (10 questions, Likert 1-7).
+-- Pre-volunteering survey is taken on the onboard wizard. Post-volunteering
+-- survey is the future trigger when a YB completes their journey.
+CREATE TABLE survey_responses (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    survey_type TEXT NOT NULL CHECK (survey_type IN ('pre', 'post')),
+    q1_afraid INTEGER NOT NULL CHECK (q1_afraid BETWEEN 1 AND 7),
+    q2_confident INTEGER NOT NULL CHECK (q2_confident BETWEEN 1 AND 7),
+    q3_comfortable_touching INTEGER NOT NULL CHECK (q3_comfortable_touching BETWEEN 1 AND 7),
+    q4_uncomfortable INTEGER NOT NULL CHECK (q4_uncomfortable BETWEEN 1 AND 7),
+    q5_different_needs INTEGER NOT NULL CHECK (q5_different_needs BETWEEN 1 AND 7),
+    q6_past_history INTEGER NOT NULL CHECK (q6_past_history BETWEEN 1 AND 7),
+    q7_relaxed INTEGER NOT NULL CHECK (q7_relaxed BETWEEN 1 AND 7),
+    q8_feel_kindness INTEGER NOT NULL CHECK (q8_feel_kindness BETWEEN 1 AND 7),
+    q9_frustrated INTEGER NOT NULL CHECK (q9_frustrated BETWEEN 1 AND 7),
+    q10_difficult_behaviour INTEGER NOT NULL CHECK (q10_difficult_behaviour BETWEEN 1 AND 7),
+    completed_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (user_id, survey_type)
+);
+CREATE INDEX idx_survey_responses_user ON survey_responses (user_id, survey_type);
+
+-- 9. TRAINING RESOURCES — curated by Tony, surfaced by the bot during STEP 4.
+-- The find_dementia_training tool web-searches for fresh ones; Tony reviews
+-- and inserts the keepers.
+CREATE TABLE training_resources (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    name TEXT NOT NULL,
+    url TEXT,
+    description TEXT,
+    estimated_minutes INTEGER,
+    is_free BOOLEAN DEFAULT TRUE,
+    active BOOLEAN DEFAULT TRUE,
+    last_verified_at TIMESTAMPTZ,
+    added_at TIMESTAMPTZ DEFAULT NOW(),
+    notes TEXT
+);
+
+-- Seed the 5 known resources from STEP 4 of system_prompt.txt
+INSERT INTO training_resources (name, url, description, estimated_minutes, is_free) VALUES
+ ('Dementia Friends', 'https://www.dementiafriends.org.uk/', 'Alzheimer''s Society 15-min online session, gives you a badge', 15, true),
+ ('The Bookcase Analogy', 'https://www.youtube.com/watch?v=nmeWyo_wqrg', 'Best 5-min explanation of how dementia affects memory', 5, true),
+ ('Adria Thompson — Why we should talk about dementia', 'https://www.youtube.com/results?search_query=Adria+Thompson+Why+we+should+talk+about+dementia', 'YouTube + @belightcare on Instagram', 20, true),
+ ('Bailey Greetham-Clark on Instagram', 'https://www.instagram.com/bailey_greetham', 'Watch how he chats with residents — joyful, natural style', 0, true),
+ ('Ask your care home about their own training', NULL, 'Many homes offer manual handling / dementia awareness courses — take them', 0, true);
+
+-- Dashboard view for Tony to see pre-survey scores
+CREATE VIEW dashboard_survey_pre AS
+SELECT u.id AS user_id,
+       u.first_name || ' ' || COALESCE(u.surname, '') AS full_name,
+       u.email, u.age, u.school_name,
+       sr.q1_afraid, sr.q2_confident, sr.q3_comfortable_touching,
+       sr.q4_uncomfortable, sr.q5_different_needs, sr.q6_past_history,
+       sr.q7_relaxed, sr.q8_feel_kindness, sr.q9_frustrated,
+       sr.q10_difficult_behaviour, sr.completed_at
+FROM survey_responses sr
+JOIN users u ON u.id = sr.user_id
+WHERE sr.survey_type = 'pre'
+ORDER BY sr.completed_at DESC;
 
 
 -- ============================================================
@@ -204,3 +271,5 @@ ALTER TABLE training_progress ENABLE ROW LEVEL SECURITY;
 ALTER TABLE care_home_emails ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_responses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE care_home_searches ENABLE ROW LEVEL SECURITY;
+ALTER TABLE survey_responses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE training_resources ENABLE ROW LEVEL SECURITY;

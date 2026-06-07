@@ -16,7 +16,7 @@ import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional, Union
+from typing import Any, Literal, Optional, Union
 
 import requests
 from dotenv import load_dotenv
@@ -549,25 +549,37 @@ def _enrich_with_emails(homes: list[dict], fallback_postcode: str) -> None:
             )
 
 
-def search_care_homes(postcode: str, radius_miles: int = 10, max_results: int = 5) -> dict:
-    """
-    Find care homes near a UK postcode. Tries CQC API first if a subscription key
-    is configured; otherwise (or on CQC failure) falls back to OpenAI web search.
+def _attempt_search_at_radius(
+    postcode: str, radius_miles: int, max_results: int, location: dict
+) -> dict:
+    """One pass through CQC (if key) or web search at a specific radius."""
+    if CQC_SUBSCRIPTION_KEY:
+        result = _search_care_homes_via_cqc(
+            postcode, radius_miles, max_results, prefetched_location=location
+        )
+        if result.get("results"):
+            result.pop("error", None)
+            return result
+    return _search_care_homes_via_web(
+        postcode, max_results, radius_miles=radius_miles, prefetched_location=location
+    )
 
-    Resolves the postcode ONCE up front so:
-      • bad postcodes return a clean error immediately (no wasted OpenAI calls)
-      • CQC + web paths share one postcodes.io HTTP request
 
-    Successful results are enriched with per-home emails (cached) and then
-    cached themselves for 7 days. Repeated lookups for the same postcode
-    return instantly with full email data baked in.
+def search_care_homes(postcode: str, radius_miles: int = 1, max_results: int = 5) -> dict:
     """
-    # Cache hit short-circuits everything — instant, free.
+    Find care homes near a UK postcode. Default radius is 1 mile (Tony's spec:
+    'within a mile of where they are in education and/or live'); we widen
+    progressively to 2, 3, 5, 10 if nothing's in range.
+
+    Result envelope includes `actual_radius_miles` so the bot can mention if it
+    had to look further out than the teen's immediate area.
+    """
+    # Cache check uses the requested (starting) radius — most teens search the
+    # same postcode again next session, so a hit returns instantly.
     cached = _check_search_cache(postcode, radius_miles, max_results)
     if cached:
         return cached
 
-    # Resolve once. If postcode is invalid, neither path can help — return now.
     location = postcode_to_latlng(postcode)
     if "error" in location:
         return {
@@ -577,25 +589,30 @@ def search_care_homes(postcode: str, radius_miles: int = 10, max_results: int = 
             "results": [],
         }
 
-    if CQC_SUBSCRIPTION_KEY:
-        result = _search_care_homes_via_cqc(
-            postcode, radius_miles, max_results, prefetched_location=location
-        )
-        if result.get("results"):
-            # Partial success: strip the error key so the LLM doesn't see a
-            # confusing "error + results" envelope.
-            result.pop("error", None)
-            _enrich_with_emails(result["results"], postcode)
-            _save_search_to_cache(postcode, radius_miles, max_results, result)
-            return result
-        print(f"[search] CQC returned no results for {redact_postcode(postcode)}, falling back to web search")
-    else:
-        print(f"[search] No CQC_SUBSCRIPTION_KEY set, using web search for {redact_postcode(postcode)}")
-    result = _search_care_homes_via_web(
-        postcode, max_results, radius_miles=radius_miles, prefetched_location=location
-    )
-    if result.get("results"):
-        _enrich_with_emails(result["results"], postcode)
+    # Auto-expand from the requested starting radius
+    # If radius_miles=1, sequence is [1, 2, 3, 5, 10]
+    # If caller passes radius_miles=5, sequence is [5, 10]
+    base_steps = [1, 2, 3, 5, 10]
+    steps = [r for r in base_steps if r >= radius_miles]
+    if not steps:
+        steps = [radius_miles]
+
+    result: dict = {"search_area": postcode, "source": "none", "results": []}
+    for step in steps:
+        attempt = _attempt_search_at_radius(postcode, step, max_results, location)
+        if attempt.get("results"):
+            attempt["actual_radius_miles"] = step
+            attempt["requested_radius_miles"] = radius_miles
+            if step > radius_miles:
+                print(f"[search] auto-expanded {redact_postcode(postcode)} from {radius_miles}mi → {step}mi to find results")
+            _enrich_with_emails(attempt["results"], postcode)
+            _save_search_to_cache(postcode, radius_miles, max_results, attempt)
+            return attempt
+        result = attempt  # keep last attempt for the no-results return
+
+    # No homes even at 10 miles
+    result["actual_radius_miles"] = steps[-1]
+    result["requested_radius_miles"] = radius_miles
     _save_search_to_cache(postcode, radius_miles, max_results, result)
     return result
 
@@ -907,15 +924,23 @@ TOOLS = [
         "function": {
             "name": "search_care_homes",
             "description": (
-                "Search for care homes near a UK postcode. Returns the closest care homes "
-                "with name, address, phone, manager name, CQC rating, and distance. "
-                "Use as soon as the young person provides their postcode."
+                "Search for care homes near a UK postcode. Default radius is 1 mile "
+                "(per YOPEY: 'within a mile of where they study or live'). If no homes "
+                "are found at 1 mile, the search auto-expands to 2, 3, 5, then 10 miles "
+                "and returns results from whichever step found them — check the "
+                "`actual_radius_miles` field in the result and tell the teen if it had "
+                "to expand. Returns the closest care homes with name, address, phone, "
+                "manager name, CQC rating, email, and distance."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "postcode": {"type": "string", "description": "A valid UK postcode, e.g. 'CB8 8YN'"},
-                    "radius_miles": {"type": "integer", "description": "Search radius. Default 10.", "default": 10},
+                    "radius_miles": {
+                        "type": "integer",
+                        "description": "Starting search radius in miles. Default 1 (will auto-expand if no results).",
+                        "default": 1,
+                    },
                     "max_results": {"type": "integer", "description": "Max care homes. Default 5.", "default": 5},
                 },
                 "required": ["postcode"],
@@ -970,6 +995,28 @@ TOOLS = [
                     },
                 },
                 "required": ["care_home_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_dementia_training",
+            "description": (
+                "Search the web for fresh free dementia training resources (videos, "
+                "online courses, apps, podcasts). Use when the teen asks for more "
+                "training beyond the curated 5 listed in your prompt, asks 'what's new?', "
+                "or finishes the curated ones. Returns a list of {name, url, description, "
+                "estimated_minutes, is_free}. Always check is_free=true before recommending."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "focus": {
+                        "type": "string",
+                        "description": "Optional kind of resource, e.g. 'short videos', 'in-person course', 'app', 'podcast'",
+                    },
+                },
             },
         },
     },
@@ -1094,19 +1141,31 @@ def create_user(
     *,
     surname: Optional[str] = None,
     email: Optional[str] = None,
-    postcode: Optional[str] = None,
+    phone: Optional[str] = None,
+    home_postcode: Optional[str] = None,
+    school_name: Optional[str] = None,
+    school_postcode: Optional[str] = None,
+    is_student: Optional[bool] = None,
+    search_preference: Optional[str] = None,
     utm_source: Optional[str] = None,
 ) -> dict:
     """
-    Create or update a user from the onboard form. Returns the row.
+    Create or update a user from the onboard wizard. Returns the row.
 
-    If `email` is provided and already exists in the users table, this updates
-    the existing row (refreshing name/age/postcode/surname) instead of failing
-    on the UNIQUE constraint. Re-onboarding with the same email is therefore a
-    legitimate flow — e.g. the teen clicked "New chat" or wiped localStorage.
+    Resolves the search `postcode` from `search_preference` so the rest of the
+    system (search_care_homes, _build_contacts_context, chat() prompt-injection)
+    can just read `users.postcode` as before.
 
-    All optional fields are keyword-only to prevent positional-arg drift.
+    If `email` already exists, updates the existing row instead of failing on
+    the UNIQUE constraint — re-onboarding with the same email is legitimate
+    (teen wiped localStorage, clicked "New chat", etc.).
+
+    All optional params are keyword-only to prevent positional-arg drift.
     """
+    resolved_postcode = (
+        school_postcode if search_preference == "school" and school_postcode else home_postcode
+    )
+
     # Look up by email first; on hit, update the existing row.
     if email:
         existing = supabase.table("users").select("*").eq("email", email).limit(1).execute()
@@ -1115,8 +1174,20 @@ def create_user(
             updates: dict[str, Any] = {"first_name": first_name, "age": age}
             if surname:
                 updates["surname"] = surname
-            if postcode:
-                updates["postcode"] = postcode
+            if phone:
+                updates["phone"] = phone
+            if home_postcode:
+                updates["home_postcode"] = home_postcode
+            if school_name:
+                updates["school_name"] = school_name
+            if school_postcode:
+                updates["school_postcode"] = school_postcode
+            if is_student is not None:
+                updates["is_student"] = is_student
+            if search_preference:
+                updates["search_preference"] = search_preference
+            if resolved_postcode:
+                updates["postcode"] = resolved_postcode
             if utm_source:
                 updates["utm_source"] = utm_source
             update_user(user_id, **updates)
@@ -1128,8 +1199,20 @@ def create_user(
         payload["surname"] = surname
     if email:
         payload["email"] = email
-    if postcode:
-        payload["postcode"] = postcode
+    if phone:
+        payload["phone"] = phone
+    if home_postcode:
+        payload["home_postcode"] = home_postcode
+    if school_name:
+        payload["school_name"] = school_name
+    if school_postcode:
+        payload["school_postcode"] = school_postcode
+    if is_student is not None:
+        payload["is_student"] = is_student
+    if search_preference:
+        payload["search_preference"] = search_preference
+    if resolved_postcode:
+        payload["postcode"] = resolved_postcode
     if utm_source:
         payload["utm_source"] = utm_source
     result = supabase.table("users").insert(payload).execute()
@@ -1290,6 +1373,86 @@ def render_nudge_email(stage_def: dict, user: dict, contact: dict) -> tuple[str,
 # goes out immediately; subsequent emails fire via the daily cron
 # as days_since_match crosses each threshold.
 # ============================================================
+
+# ============================================================
+# DEMENTIA TRAINING DISCOVERY
+# ============================================================
+# Web-search for fresh free training resources beyond the curated 5 in
+# training_resources. Tony reviews + seeds the keepers manually for now;
+# v1.1 will run this on a cron and present new finds to Tony for approval.
+
+def find_dementia_training_resources(focus: Optional[str] = None) -> dict:
+    """
+    Use gpt-4o-mini-search-preview to find currently-free dementia training
+    resources online. Returns structured JSON the bot can render directly.
+    """
+    if not openai_client:
+        return {"error": "OpenAI not configured", "results": []}
+
+    focus_hint = f" Focus: {focus}." if focus else ""
+    prompt = (
+        f"Find 4-6 FREE dementia training resources for UK volunteers"
+        f"{focus_hint} Prefer resources from reputable organisations "
+        f"(Alzheimer's Society, Dementia UK, NHS, Skills for Care, "
+        f"university extension courses). Verify each is currently free — "
+        f"some used to be free and now charge. Return STRICT JSON only:\n\n"
+        '{"resources": [\n'
+        '  {\n'
+        '    "name": "...",\n'
+        '    "url": "https://...",\n'
+        '    "description": "1-2 sentences",\n'
+        '    "estimated_minutes": 15,\n'
+        '    "is_free": true,\n'
+        '    "provider": "organisation name"\n'
+        '  }\n'
+        "]}\n\n"
+        "Rules:\n"
+        " - ONLY include resources you can confirm are currently free.\n"
+        " - Prefer 2024-2025 content over older resources.\n"
+        " - estimated_minutes is the typical completion time; 0 if ongoing.\n"
+        " - Never invent — only include what you actually found."
+    )
+
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini-search-preview",
+            messages=[{"role": "user", "content": prompt}],
+            web_search_options={},
+            user="yopey-training-search",
+        )
+        text = (response.choices[0].message.content or "").strip()
+    except Exception as e:
+        return {"error": f"Web search error: {e}", "results": []}
+
+    data = _extract_json_object(text)
+    if data is None:
+        return {"error": "Search returned no parseable JSON", "results": []}
+    resources = data.get("resources") or []
+    # Filter out anything missing url or marked not free
+    cleaned = [
+        r for r in resources
+        if r.get("url") and r.get("is_free", True)
+    ]
+    return {"results": cleaned[:6]}
+
+
+def list_curated_training() -> list[dict]:
+    """Active rows from training_resources, sorted by added_at desc."""
+    if not supabase:
+        return []
+    try:
+        res = (
+            supabase.table("training_resources")
+            .select("name, url, description, estimated_minutes, is_free")
+            .eq("active", True)
+            .order("added_at", desc=True)
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        print(f"[training] curated lookup failed: {e}")
+        return []
+
 
 # ----- HMAC tokens for clickable email links -----
 # Each payload has a "k" (kind) field that the /r/{token} handler dispatches on:
@@ -1796,6 +1959,10 @@ def execute_tool(tool_name: str, args: dict, user_id: str) -> str:
         )
         return json.dumps(result)
 
+    if tool_name == "find_dementia_training":
+        result = find_dementia_training_resources(focus=args.get("focus"))
+        return json.dumps(result)
+
     if tool_name == "mark_care_home_replied":
         care_home_name = args["care_home_name"]
         outcome = args["outcome"]
@@ -2006,16 +2173,47 @@ app.add_middleware(
 
 class OnboardRequest(BaseModel):
     """
-    The frontend collects all 5 fields on the form before chat begins, and the
-    chat / nudge / drip flows depend on every one of them. We enforce required
-    here so direct API callers (or stale clients) can't create broken users.
+    Frontend collects everything on the wizard before /chat starts.
+    All required fields are enforced here so direct API callers (or stale
+    clients) can't create half-built users.
     """
     first_name: str = Field(min_length=1, max_length=50)
     surname: str = Field(min_length=1, max_length=50)
     age: int = Field(ge=16, le=120, description="Must be 16 or older")
     email: EmailStr
-    postcode: str = Field(min_length=3, max_length=10)
+    phone: str = Field(min_length=5, max_length=20)
+    home_postcode: str = Field(min_length=3, max_length=10)
+    is_student: bool
+    school_name: Optional[str] = Field(default=None, max_length=120)
+    school_postcode: Optional[str] = Field(default=None, max_length=10)
+    search_preference: Literal["home", "school"]
     utm_source: Optional[str] = None
+
+
+class SurveyRequest(BaseModel):
+    """
+    Dementia Attitudes Scale, 10 Likert questions (1=Strongly Disagree, 7=Strongly Agree).
+    """
+    user_id: str
+    survey_type: Literal["pre", "post"] = "pre"
+    q1_afraid: int = Field(ge=1, le=7)
+    q2_confident: int = Field(ge=1, le=7)
+    q3_comfortable_touching: int = Field(ge=1, le=7)
+    q4_uncomfortable: int = Field(ge=1, le=7)
+    q5_different_needs: int = Field(ge=1, le=7)
+    q6_past_history: int = Field(ge=1, le=7)
+    q7_relaxed: int = Field(ge=1, le=7)
+    q8_feel_kindness: int = Field(ge=1, le=7)
+    q9_frustrated: int = Field(ge=1, le=7)
+    q10_difficult_behaviour: int = Field(ge=1, le=7)
+
+
+# The 10 question fields, exported for response shape symmetry
+SURVEY_QUESTION_FIELDS = [
+    "q1_afraid", "q2_confident", "q3_comfortable_touching", "q4_uncomfortable",
+    "q5_different_needs", "q6_past_history", "q7_relaxed", "q8_feel_kindness",
+    "q9_frustrated", "q10_difficult_behaviour",
+]
 
 
 class OnboardResponse(BaseModel):
@@ -2286,15 +2484,20 @@ def delete_user_endpoint(user_id: str):
 
 @app.post("/api/onboard", response_model=OnboardResponse)
 def onboard_endpoint(req: OnboardRequest):
-    """Called by the pre-chat form. Creates user record."""
+    """Called by the pre-chat wizard. Creates or upserts user record."""
     _require_services()
     try:
         user = create_user(
             first_name=req.first_name,
             age=req.age,
             surname=req.surname,
-            email=str(req.email) if req.email else None,
-            postcode=req.postcode,
+            email=str(req.email),
+            phone=req.phone,
+            home_postcode=req.home_postcode,
+            school_name=req.school_name,
+            school_postcode=req.school_postcode,
+            is_student=req.is_student,
+            search_preference=req.search_preference,
             utm_source=req.utm_source,
         )
     except Exception as e:
@@ -2304,6 +2507,43 @@ def onboard_endpoint(req: OnboardRequest):
         first_name=user["first_name"],
         postcode=user.get("postcode"),
     )
+
+
+@app.post("/api/survey")
+def survey_endpoint(req: SurveyRequest):
+    """
+    Store a Dementia Attitudes Scale response. Called from the onboard wizard
+    AFTER /api/onboard, and (later, v1.1) at the end of a YB's journey for the
+    'post' survey.
+    """
+    _require_services()
+    # User must exist (the wizard will have just created them)
+    if not get_user(req.user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+
+    payload: dict[str, Any] = {
+        "user_id": req.user_id,
+        "survey_type": req.survey_type,
+        **{q: getattr(req, q) for q in SURVEY_QUESTION_FIELDS},
+    }
+    try:
+        # Idempotent: re-submitting the same (user, type) silently no-ops
+        existing = (
+            supabase.table("survey_responses")
+            .select("id")
+            .eq("user_id", req.user_id)
+            .eq("survey_type", req.survey_type)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            return {"status": "already_submitted"}
+        supabase.table("survey_responses").insert(payload).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not save survey: {e}")
+
+    print(f"[survey] {req.survey_type}-survey stored for user {redact_id(req.user_id)}")
+    return {"status": "saved"}
 
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -2374,6 +2614,24 @@ def dashboard_stuck():
 def dashboard_matched():
     res = supabase.table("dashboard_matched").select("*").limit(500).execute()
     return res.data
+
+
+@app.get("/api/dashboard/survey-stats", dependencies=[Depends(require_dashboard_auth)])
+def dashboard_survey_stats():
+    """Per-question average across all pre-volunteering surveys, plus the latest
+    individual responses for Tony to read individually."""
+    res = supabase.table("survey_responses").select("*").eq("survey_type", "pre").execute()
+    rows = res.data or []
+    n = len(rows)
+    averages: dict[str, Optional[float]] = {}
+    for q in SURVEY_QUESTION_FIELDS:
+        vals = [r[q] for r in rows if r.get(q) is not None]
+        averages[q] = round(sum(vals) / len(vals), 2) if vals else None
+    return {
+        "count": n,
+        "averages": averages,
+        "recent": rows[-20:][::-1] if rows else [],
+    }
 
 
 @app.post("/api/dashboard/mark-reply", dependencies=[Depends(require_dashboard_auth)])

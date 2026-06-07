@@ -3,10 +3,15 @@ const API_URL =
 
 export type OnboardPayload = {
   first_name: string;
-  surname?: string;
+  surname: string;
   age: number;
-  email?: string;
-  postcode?: string;
+  email: string;
+  phone: string;
+  home_postcode: string;
+  is_student: boolean;
+  school_name?: string;
+  school_postcode?: string;
+  search_preference: "home" | "school";
   utm_source?: string;
 };
 
@@ -15,6 +20,36 @@ export type OnboardResponse = {
   first_name: string;
   postcode?: string | null;
 };
+
+export type SurveyAnswers = {
+  q1_afraid: number;
+  q2_confident: number;
+  q3_comfortable_touching: number;
+  q4_uncomfortable: number;
+  q5_different_needs: number;
+  q6_past_history: number;
+  q7_relaxed: number;
+  q8_feel_kindness: number;
+  q9_frustrated: number;
+  q10_difficult_behaviour: number;
+};
+
+export async function submitSurvey(
+  user_id: string,
+  answers: SurveyAnswers,
+  survey_type: "pre" | "post" = "pre"
+): Promise<{ status: string }> {
+  const res = await fetch(`${API_URL}/api/survey`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id, survey_type, ...answers }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `Survey submit failed (${res.status})`);
+  }
+  return res.json();
+}
 
 export async function onboard(
   payload: OnboardPayload

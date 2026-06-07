@@ -1,79 +1,60 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { onboard } from "@/lib/api";
+import { onboard, submitSurvey, type SurveyAnswers } from "@/lib/api";
 import { userStorage } from "@/lib/storage";
+import Step1Personal, { emptyPersonal, type PersonalData } from "@/components/onboard/Step1Personal";
+import Step2Survey, { emptySurvey, type SurveyData } from "@/components/onboard/Step2Survey";
+import Step3Consent from "@/components/onboard/Step3Consent";
 
-// Permissive UK postcode pattern. Accepts the standard format, the Girobank
-// 'GIR 0AA' special case, and BFPO addresses. Authoritative validation happens
-// server-side via postcodes.io — this is just a lightweight UX check.
-const UK_POSTCODE_RE =
-  /^(?:GIR\s*0AA|BFPO\s*\d{1,4}|[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})$/i;
+type Step = 1 | 2 | 3;
 
 export default function OnboardForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const utmSource = searchParams.get("utm_source") || undefined;
 
-  const [firstName, setFirstName] = useState("");
-  const [surname, setSurname] = useState("");
-  const [ageStr, setAgeStr] = useState("");
-  const [email, setEmail] = useState("");
-  const [postcode, setPostcode] = useState("");
-  const [consent, setConsent] = useState(false);
+  const [step, setStep] = useState<Step>(1);
+  const [personal, setPersonal] = useState<PersonalData>(emptyPersonal);
+  const [survey, setSurvey] = useState<SurveyData>(emptySurvey);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const ageNum = parseInt(ageStr, 10);
-  const ageInvalid = ageStr !== "" && (Number.isNaN(ageNum) || ageNum < 16 || ageNum > 120);
-  const emailInvalid = email !== "" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-  const postcodeInvalid = postcode !== "" && !UK_POSTCODE_RE.test(postcode.trim());
-
-  const canSubmit =
-    firstName.trim().length > 0 &&
-    surname.trim().length > 0 &&
-    !Number.isNaN(ageNum) &&
-    ageNum >= 16 &&
-    ageNum <= 120 &&
-    email.trim().length > 0 &&
-    !emailInvalid &&
-    postcode.trim().length > 0 &&
-    !postcodeInvalid &&
-    consent &&
-    !submitting;
-
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    setError(null);
-
-    if (Number.isNaN(ageNum) || ageNum < 16) {
-      setError("Sorry, you need to be at least 16 to use YOPEY Befriender.");
+  async function handleFinalSubmit(consented: boolean) {
+    if (!consented) {
+      setError("Please tick the consent box to continue.");
       return;
     }
-    if (emailInvalid) {
-      setError("Please enter a valid email address.");
-      return;
-    }
-    if (postcodeInvalid) {
-      setError("That doesn't look like a UK postcode (e.g. CB8 8YN).");
-      return;
-    }
-
     setSubmitting(true);
+    setError(null);
     try {
-      const { user_id, first_name, postcode: returnedPostcode } = await onboard({
-        first_name: firstName.trim(),
-        surname: surname.trim(),
+      const ageNum = parseInt(personal.ageStr, 10);
+      const onboardRes = await onboard({
+        first_name: personal.firstName.trim(),
+        surname: personal.surname.trim(),
         age: ageNum,
-        email: email.trim(),
-        postcode: postcode.trim().toUpperCase(),
+        email: personal.email.trim(),
+        phone: personal.phone.trim(),
+        home_postcode: personal.homePostcode.trim().toUpperCase(),
+        is_student: personal.isStudent ?? false,
+        school_name: personal.isStudent ? personal.schoolName.trim() : undefined,
+        school_postcode: personal.isStudent
+          ? personal.schoolPostcode.trim().toUpperCase()
+          : undefined,
+        search_preference: personal.searchPreference ?? "home",
         utm_source: utmSource,
       });
+
+      // Survey is required — every field is set after Step 2.
+      await submitSurvey(onboardRes.user_id, survey as SurveyAnswers, "pre");
+
       userStorage.set({
-        user_id,
-        first_name,
-        postcode: returnedPostcode || postcode.trim().toUpperCase(),
+        user_id: onboardRes.user_id,
+        first_name: onboardRes.first_name,
+        postcode: onboardRes.postcode || undefined,
+        is_student: personal.isStudent ?? false,
+        search_preference: personal.searchPreference ?? "home",
       });
       router.push("/chat");
     } catch (err: any) {
@@ -84,178 +65,57 @@ export default function OnboardForm() {
 
   return (
     <form
-      onSubmit={handleSubmit}
-      className="w-full max-w-md bg-white rounded-3xl shadow-xl border border-purple-100 p-6 md:p-8 space-y-4"
+      onSubmit={(e) => e.preventDefault()}
+      className="w-full max-w-md bg-white rounded-3xl shadow-xl border border-purple-100 p-6 md:p-8 space-y-5"
     >
       <div>
+        <div className="flex items-center gap-2 mb-3" aria-label={`Step ${step} of 3`}>
+          {[1, 2, 3].map((n) => (
+            <div
+              key={n}
+              className={`h-2 flex-1 rounded-full transition ${
+                n <= step ? "bg-yopey-primary" : "bg-gray-200"
+              }`}
+            />
+          ))}
+        </div>
         <h1 className="text-2xl md:text-3xl font-extrabold text-yopey-ink">
-          Let&apos;s get started
+          {step === 1 && "About you"}
+          {step === 2 && "A quick survey"}
+          {step === 3 && "Almost there"}
         </h1>
-        <p className="mt-2 text-gray-600 text-sm">
-          A few quick details and we&apos;ll find care homes near you straight away.
+        <p className="mt-1 text-gray-600 text-sm">
+          {step === 1 && "We'll find care homes within walking distance once we know where you are."}
+          {step === 2 && "Ten quick questions — won't take more than a couple of minutes."}
+          {step === 3 && "One last check, then we'll find care homes near you."}
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label htmlFor="firstName" className="block text-sm font-semibold text-gray-700 mb-1">
-            First name
-          </label>
-          <input
-            id="firstName"
-            type="text"
-            autoComplete="given-name"
-            required
-            maxLength={50}
-            value={firstName}
-            onChange={(e) => setFirstName(e.target.value)}
-            placeholder="Sarah"
-            className="w-full px-3 py-3 rounded-xl border-2 border-gray-200 focus:border-yopey-primary focus:outline-none focus:ring-0 transition"
-          />
-        </div>
-
-        <div>
-          <label htmlFor="surname" className="block text-sm font-semibold text-gray-700 mb-1">
-            Surname
-          </label>
-          <input
-            id="surname"
-            type="text"
-            autoComplete="family-name"
-            required
-            maxLength={50}
-            value={surname}
-            onChange={(e) => setSurname(e.target.value)}
-            placeholder="Smith"
-            className="w-full px-3 py-3 rounded-xl border-2 border-gray-200 focus:border-yopey-primary focus:outline-none focus:ring-0 transition"
-          />
-        </div>
-      </div>
-
-      <div>
-        <label htmlFor="age" className="block text-sm font-semibold text-gray-700 mb-1">
-          Age
-        </label>
-        <input
-          id="age"
-          type="number"
-          inputMode="numeric"
-          min={16}
-          max={120}
-          required
-          value={ageStr}
-          onChange={(e) => setAgeStr(e.target.value)}
-          placeholder="16"
-          aria-invalid={ageInvalid}
-          className={`w-full px-4 py-3 rounded-xl border-2 focus:outline-none focus:ring-0 transition ${
-            ageInvalid
-              ? "border-red-400 focus:border-red-500"
-              : "border-gray-200 focus:border-yopey-primary"
-          }`}
+      {step === 1 && (
+        <Step1Personal
+          data={personal}
+          setData={setPersonal}
+          onNext={() => setStep(2)}
         />
-        {ageInvalid ? (
-          <p className="mt-1 text-sm text-red-600">
-            Sorry, you need to be 16+ to use YOPEY Befriender.
-          </p>
-        ) : (
-          <p className="mt-1 text-xs text-gray-500">For 16 and over</p>
-        )}
-      </div>
-
-      <div>
-        <label htmlFor="email" className="block text-sm font-semibold text-gray-700 mb-1">
-          Email
-        </label>
-        <input
-          id="email"
-          type="email"
-          autoComplete="email"
-          required
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="sarah@example.com"
-          aria-invalid={emailInvalid}
-          className={`w-full px-4 py-3 rounded-xl border-2 focus:outline-none focus:ring-0 transition ${
-            emailInvalid
-              ? "border-red-400 focus:border-red-500"
-              : "border-gray-200 focus:border-yopey-primary"
-          }`}
-        />
-        <p className="mt-1 text-xs text-gray-500">
-          So we can send tips and follow-ups
-        </p>
-      </div>
-
-      <div>
-        <label htmlFor="postcode" className="block text-sm font-semibold text-gray-700 mb-1">
-          Postcode
-        </label>
-        <input
-          id="postcode"
-          type="text"
-          autoComplete="postal-code"
-          required
-          maxLength={10}
-          value={postcode}
-          onChange={(e) => setPostcode(e.target.value)}
-          placeholder="W13 8RB"
-          aria-invalid={postcodeInvalid}
-          className={`w-full px-4 py-3 rounded-xl border-2 uppercase focus:outline-none focus:ring-0 transition ${
-            postcodeInvalid
-              ? "border-red-400 focus:border-red-500"
-              : "border-gray-200 focus:border-yopey-primary"
-          }`}
-        />
-        <p className="mt-1 text-xs text-gray-500">
-          Your home or school postcode — to find care homes nearby
-        </p>
-      </div>
-
-      <div className="rounded-xl border-2 border-gray-200 p-4 bg-purple-50/40">
-        <label className="flex gap-3 items-start cursor-pointer">
-          <input
-            type="checkbox"
-            checked={consent}
-            onChange={(e) => setConsent(e.target.checked)}
-            className="mt-1 w-5 h-5 accent-yopey-primary cursor-pointer"
-          />
-          <span className="text-sm text-gray-700 leading-relaxed">
-            I&apos;m happy for YOPEY to store this info + my chat with the bot so
-            it can find care homes and send me reminders. I&apos;ve read the{" "}
-            <a
-              href="/privacy"
-              target="_blank"
-              rel="noreferrer"
-              className="text-yopey-primary font-semibold underline"
-            >
-              privacy notice
-            </a>
-            .
-          </span>
-        </label>
-      </div>
-
-      {error && (
-        <div className="rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3">
-          {error}
-        </div>
       )}
 
-      <button
-        type="submit"
-        disabled={!canSubmit}
-        className="w-full px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-md hover:bg-yopey-primaryDark transition active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed min-h-[52px]"
-      >
-        {submitting ? "Setting up..." : "Find care homes →"}
-      </button>
+      {step === 2 && (
+        <Step2Survey
+          data={survey}
+          setData={setSurvey}
+          onNext={() => setStep(3)}
+          onBack={() => setStep(1)}
+        />
+      )}
 
-      <p className="text-xs text-gray-500 text-center">
-        You can delete your data any time at{" "}
-        <a href="/privacy" className="underline">
-          /privacy
-        </a>
-        .
-      </p>
+      {step === 3 && (
+        <Step3Consent
+          submitting={submitting}
+          error={error}
+          onSubmit={handleFinalSubmit}
+          onBack={() => setStep(2)}
+        />
+      )}
     </form>
   );
 }

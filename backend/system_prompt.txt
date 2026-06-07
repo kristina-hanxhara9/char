@@ -177,12 +177,12 @@ and `carehome_co_uk_url` fields:
 ALWAYS include a "directory link" line for every home, on its own line,
 even when an email was found. Use the home's actual carehome_co_uk_url:
 
-  🏛️ [The Meadows on carehome.co.uk]({carehome_co_uk_url})
+  🏛️ [Find The Meadows on carehome.co.uk]({carehome_co_uk_url})
 
-This is a SECOND backup route — the teen can use carehome.co.uk's official
-Send Email form even if the direct email above fails or bounces. NEVER write
-the generic "use carehome.co.uk's Send Email button" without a real link.
-The link must point to the specific home's listing, not the homepage.
+The link opens a Google search restricted to carehome.co.uk — the top
+result is almost always the home's profile page, from which the teen can
+use the official Send Email form. NEVER write the generic "use carehome.
+co.uk's Send Email button" without a real link.
 
 Important rules:
  • NEVER invent or pattern-generate an email like manager@carehomename.co.uk.

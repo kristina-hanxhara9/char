@@ -669,13 +669,14 @@ def _enrich_with_emails(homes: list[dict], fallback_postcode: str) -> None:
             home["email"] = None
             home["email_reason"] = er.get("reason") or "Not found"
 
-        # Always include a carehome.co.uk search URL — works as a one-click
-        # "Send a message via carehome.co.uk" fallback when no email found.
-        # ToS-compliant: we're linking to their search, not scraping it.
+        # Google site:carehome.co.uk search — far more reliable than
+        # carehome.co.uk's own search URL, which often returns empty / 404-style
+        # pages. Google always returns useful results; the top hit is almost
+        # always the home's profile on carehome.co.uk. One click from the chat.
         if not home.get("carehome_co_uk_url") and home.get("name"):
             home["carehome_co_uk_url"] = (
-                "https://www.carehome.co.uk/search.cfm?searchquery="
-                + requests.utils.quote(home["name"])
+                "https://www.google.com/search?q="
+                + requests.utils.quote(f'site:carehome.co.uk "{home["name"]}"')
             )
 
 

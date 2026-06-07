@@ -149,7 +149,13 @@ export default function ChatWindow() {
   }
 
   function handleEndChat() {
-    if (confirm("Start a new chat? Your current chat history will stay saved.")) {
+    if (
+      confirm(
+        "Start over from the beginning? This signs you out on this device and " +
+          "takes you back to the form so you can redo your details. Your account " +
+          "and chat history stay saved in YOPEY's system (delete them at /privacy)."
+      )
+    ) {
       // Clear the per-session auto-search flag too so the next user (or the same
       // user with a different postcode) gets a fresh search instead of the
       // "Welcome back" greeting.
@@ -189,8 +195,9 @@ export default function ChatWindow() {
               type="button"
               onClick={handleEndChat}
               className="text-sm text-gray-500 hover:text-yopey-primary px-3 py-1.5 rounded-lg min-h-[44px] min-w-[44px]"
+              title="Sign out and redo the form"
             >
-              New chat
+              Start over
             </button>
           </div>
         </div>
@@ -221,6 +228,10 @@ export default function ChatWindow() {
             onSend={handleSend}
             disabled={pending}
           />
+          <p className="text-[11px] text-gray-400 text-center mt-2 px-2">
+            Need to change something? Just tell me — e.g.{" "}
+            <em>&quot;use my home postcode instead&quot;</em>.
+          </p>
         </div>
       </div>
     </div>

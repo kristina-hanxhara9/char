@@ -67,15 +67,18 @@ export default function ChatWindow() {
       // updating from the dashboard, etc.) are reflected on this device.
       let u: StoredUser = stored;
       try {
-        const fresh = await fetchUser(stored.user_id);
+        const fresh = await fetchUser(stored.user_id, stored.user_token);
         u = {
           user_id: fresh.user_id,
+          user_token: stored.user_token,
           first_name: fresh.first_name,
           postcode: fresh.postcode || undefined,
+          is_student: stored.is_student,
+          search_preference: stored.search_preference,
         };
         userStorage.set(u);
       } catch {
-        // Server fetch failed (offline, server down) — carry on with localStorage
+        // Server fetch failed (offline, expired token, server down) — carry on with localStorage
       }
       setUser(u);
 

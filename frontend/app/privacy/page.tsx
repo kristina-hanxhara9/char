@@ -28,7 +28,7 @@ export default function PrivacyPage() {
     setDeleting(true);
     setError(null);
     try {
-      const result = await deleteAccount(u.user_id);
+      const result = await deleteAccount(u.user_id, u.user_token);
       const total = Object.values(result.deleted_rows).reduce((a, b) => a + b, 0);
       setDeleteResult(`Done. ${total} record${total === 1 ? "" : "s"} deleted.`);
       userStorage.clear();
@@ -66,16 +66,28 @@ export default function PrivacyPage() {
         <h2 className="text-xl font-bold mt-8 mb-2">What we collect</h2>
         <ul className="list-disc pl-6 space-y-1 text-gray-700">
           <li>
-            <strong>From the form</strong>: your first name, surname, age, email
-            address, and postcode.
+            <strong>About you</strong>: your first name, surname, age, email,
+            phone number, and home postcode.
+          </li>
+          <li>
+            <strong>About where you study</strong> (if you&apos;re in school /
+            college / uni): the name of your school and which postcode
+            you&apos;d like care homes searched near (school or home).
+          </li>
+          <li>
+            <strong>Your survey answers</strong>: the 10 Dementia Attitudes
+            Scale answers you give in the sign-up wizard. YOPEY uses these to
+            compare your views before and after volunteering — to measure how
+            being a befriender changes you. We don&apos;t share individual
+            scores; only anonymous averages.
           </li>
           <li>
             <strong>From the chat</strong>: everything you type into the chatbot,
             plus what the bot replies (so we can keep context between sessions).
           </li>
           <li>
-            <strong>Care home contacts</strong>: which care homes you reach out to and
-            whether they reply, so we can send the right reminders.
+            <strong>Care home contacts</strong>: which care homes you reach out
+            to and whether they reply, so we can send the right reminders.
           </li>
         </ul>
 

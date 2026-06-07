@@ -106,6 +106,7 @@ export default function DashboardPage() {
   }
 
   async function handleDeleteUser(userId: string, fullName: string) {
+    if (!password) return;
     if (
       !confirm(
         `Permanently delete ${fullName} and ALL their data (chat history, ` +
@@ -117,7 +118,7 @@ export default function DashboardPage() {
     setBusyRow(userId);
     setError(null);
     try {
-      await adminDeleteUser(userId);
+      await adminDeleteUser(userId, password);
       await reloadCurrentTab();
     } catch (e: any) {
       setError(e.message || "Delete failed");

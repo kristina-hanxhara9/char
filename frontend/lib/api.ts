@@ -17,6 +17,7 @@ export type OnboardPayload = {
 
 export type OnboardResponse = {
   user_id: string;
+  user_token: string;  // HMAC token — store in localStorage, send as X-User-Token
   first_name: string;
   postcode?: string | null;
 };
@@ -61,12 +62,16 @@ export async function geocodeSchool(name: string): Promise<{ postcode: string }>
 
 export async function submitSurvey(
   user_id: string,
+  user_token: string,
   answers: SurveyAnswers,
   survey_type: "pre" | "post" = "pre"
 ): Promise<{ status: string }> {
   const res = await fetch(`${API_URL}/api/survey`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-User-Token": user_token,
+    },
     body: JSON.stringify({ user_id, survey_type, ...answers }),
   });
   if (!res.ok) {
@@ -100,8 +105,10 @@ export type UserMe = {
   status?: string | null;
 };
 
-export async function fetchUser(user_id: string): Promise<UserMe> {
-  const res = await fetch(`${API_URL}/api/user/${user_id}`);
+export async function fetchUser(user_id: string, user_token: string): Promise<UserMe> {
+  const res = await fetch(`${API_URL}/api/user/${user_id}`, {
+    headers: { "X-User-Token": user_token },
+  });
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}));
     throw new Error(detail.detail || `Fetch user failed (${res.status})`);
@@ -110,10 +117,12 @@ export async function fetchUser(user_id: string): Promise<UserMe> {
 }
 
 export async function deleteAccount(
-  user_id: string
+  user_id: string,
+  user_token: string
 ): Promise<{ status: string; deleted_rows: Record<string, number> }> {
   const res = await fetch(`${API_URL}/api/user/${user_id}`, {
     method: "DELETE",
+    headers: { "X-User-Token": user_token },
   });
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}));
@@ -172,11 +181,12 @@ export async function markReply(
   }
 }
 
-export async function adminDeleteUser(user_id: string): Promise<void> {
-  // Same endpoint the privacy-page self-delete uses. user_id is the only
-  // credential, so Tony can use it from the dashboard too.
+export async function adminDeleteUser(user_id: string, password: string): Promise<void> {
+  // Same endpoint, but admin auth via X-Dashboard-Password header instead
+  // of the user's HMAC token (the dashboard doesn't know the user's token).
   const res = await fetch(`${API_URL}/api/user/${user_id}`, {
     method: "DELETE",
+    headers: { "X-Dashboard-Password": password },
   });
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}));

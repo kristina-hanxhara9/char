@@ -9,12 +9,15 @@ and dashboard endpoints.
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import math
 import os
 import re
+import socket
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Optional, Union
 
@@ -207,7 +210,7 @@ def _geocode_school_via_web_search(school_name: str) -> Optional[dict]:
     # This catches model hallucination — a fake "AB1 2CD" will return status=404.
     validated = postcode_to_latlng(candidate)
     if "error" in validated:
-        print(f"[geocode] Web search returned invalid postcode for {school_name[:40]}")
+        print(f"[geocode] Web search returned invalid postcode for {redact_school_name(school_name)}")
         return None
     return {
         "postcode": candidate,
@@ -217,28 +220,76 @@ def _geocode_school_via_web_search(school_name: str) -> Optional[dict]:
     }
 
 
+def _name_key(school_name: str) -> str:
+    """Cache key for school postcodes: lowercased + collapsed whitespace."""
+    return re.sub(r"\s+", " ", school_name.strip().lower())
+
+
+def _check_school_cache(school_name: str) -> Optional[str]:
+    """Return a cached postcode for this school, or None."""
+    if not supabase:
+        return None
+    try:
+        res = (
+            supabase.table("school_postcodes")
+            .select("postcode")
+            .eq("name_key", _name_key(school_name))
+            .limit(1)
+            .execute()
+        )
+        return res.data[0]["postcode"] if res.data else None
+    except Exception:
+        return None
+
+
+def _save_school_cache(school_name: str, postcode: str, source: str) -> None:
+    if not supabase:
+        return
+    try:
+        supabase.table("school_postcodes").upsert({
+            "name_key": _name_key(school_name),
+            "postcode": postcode,
+            "source": source,
+        }).execute()
+    except Exception as e:
+        print(f"[school-cache] upsert failed: {e}")
+
+
 def _geocode_school(school_name: str) -> Optional[dict]:
     """
-    Resolve a UK school name to a postcode. Tries free Nominatim first; if
-    that returns nothing usable, falls back to OpenAI web search and validates
-    the result against postcodes.io to prevent hallucination.
-
-    Returns {"postcode", "latitude", "longitude", "admin_district"} or None
-    when neither stage finds a confident match.
+    Resolve a UK school name to a postcode. Checks cache first, then Nominatim,
+    then OpenAI web search (validated against postcodes.io to prevent
+    hallucination). Cached results persist across the wizard's two calls
+    (geocode-school + onboard) so we don't re-pay.
     """
     if not school_name or not school_name.strip():
         return None
 
+    # Cache: same school typed by the same teen (or a school we've seen
+    # for any teen) returns its prior resolution instantly.
+    cached_postcode = _check_school_cache(school_name)
+    if cached_postcode:
+        validated = postcode_to_latlng(cached_postcode)
+        if "error" not in validated:
+            return {
+                "postcode": cached_postcode,
+                "latitude": validated["latitude"],
+                "longitude": validated["longitude"],
+                "admin_district": validated.get("admin_district"),
+            }
+
     nominatim = _geocode_school_via_nominatim(school_name)
     if nominatim:
+        _save_school_cache(school_name, nominatim["postcode"], "nominatim")
         return nominatim
 
-    print(f"[geocode] Nominatim found nothing for '{school_name[:40]}', trying web search")
+    print(f"[geocode] Nominatim found nothing for '{redact_school_name(school_name)}', trying web search")
     web = _geocode_school_via_web_search(school_name)
     if web:
+        _save_school_cache(school_name, web["postcode"], "web_search")
         return web
 
-    print(f"[geocode] Both stages failed for '{school_name[:40]}'")
+    print(f"[geocode] Both stages failed for '{redact_school_name(school_name)}'")
     return None
 
 
@@ -387,9 +438,13 @@ def _search_care_homes_via_cqc(
                 "number_of_beds": detail.get("numberOfBeds", "Unknown"),
                 "last_inspection_date": last_inspection,
                 "cqc_url": f"https://www.cqc.org.uk/location/{loc_id}",
-                "carehome_co_uk_search_url": (
-                    "https://www.carehome.co.uk/search.cfm?searchquery="
-                    + requests.utils.quote(detail.get("name", ""))
+                # Direct carehome.co.uk search URL — but enrichment may
+                # overwrite with a Google site-search if this URL ever turns out
+                # to be broken. Stored under the canonical key the prompt + LLM
+                # use.
+                "carehome_co_uk_url": (
+                    "https://www.google.com/search?q="
+                    + requests.utils.quote(f'site:carehome.co.uk "{detail.get("name", "")}"')
                 ),
             })
         page += 1
@@ -578,20 +633,22 @@ def _normalize_postcode(postcode: str) -> str:
 
 
 def _check_search_cache(postcode: str, radius_miles: int, max_results: int) -> Optional[dict]:
-    """Return a recent cached search result, or None if expired/missing."""
+    """
+    Return a recent cached search result if any cached row's actual_radius_miles
+    is at least the requested radius_miles AND its max_results is ≥ requested.
+    A wider-area cached search is a valid superset for a narrower request.
+    """
     if not supabase:
         return None
     cutoff = (datetime.now(timezone.utc) - timedelta(days=SEARCH_CACHE_TTL_DAYS)).isoformat()
     try:
         res = (
             supabase.table("care_home_searches")
-            .select("payload")
+            .select("payload, radius_miles, max_results, cached_at")
             .eq("postcode", _normalize_postcode(postcode))
-            .eq("radius_miles", radius_miles)
-            .eq("max_results", max_results)
             .gte("cached_at", cutoff)
             .order("cached_at", desc=True)
-            .limit(1)
+            .limit(10)
             .execute()
         )
     except Exception as e:
@@ -599,9 +656,16 @@ def _check_search_cache(postcode: str, radius_miles: int, max_results: int) -> O
         return None
     if not res.data:
         return None
-    payload = res.data[0]["payload"]
-    payload["cached"] = True
-    return payload
+
+    for row in res.data:
+        payload = row["payload"]
+        cached_actual = payload.get("actual_radius_miles") or row.get("radius_miles") or 0
+        cached_max = row.get("max_results") or len(payload.get("results", []))
+        if cached_actual >= radius_miles and cached_max >= max_results:
+            payload = dict(payload)  # shallow copy so we don't mutate the cache row
+            payload["cached"] = True
+            return payload
+    return None
 
 
 def _save_search_to_cache(
@@ -638,6 +702,9 @@ def _enrich_with_emails(homes: list[dict], fallback_postcode: str) -> None:
         return
 
     def lookup(home: dict) -> dict:
+        name = home.get("name")
+        if not name:
+            return {"found": False, "reason": "Home missing name"}
         manager = home.get("manager") or ""
         # If the manager string is the "(not listed)" sentinel, don't pass it
         # to the email search — the model would treat it as a real name.
@@ -645,19 +712,25 @@ def _enrich_with_emails(homes: list[dict], fallback_postcode: str) -> None:
             manager if manager and "not listed" not in manager.lower() else None
         )
         return find_email_via_web_search(
-            care_home_name=home["name"],
+            care_home_name=name,
             town_or_postcode=home.get("postcode") or fallback_postcode,
             manager_name=clean_manager,
             website=home.get("website"),
         )
 
-    # max_workers=5 matches our typical max_results — caps concurrent OpenAI calls
+    # max_workers=5 matches our typical max_results — caps concurrent OpenAI calls.
+    # Use submit + as_completed with per-future try/except so a single failed
+    # lookup never nukes the whole batch's successful results.
+    email_results: list[dict] = [{"found": False} for _ in homes]
     with ThreadPoolExecutor(max_workers=5) as executor:
-        try:
-            email_results = list(executor.map(lookup, homes))
-        except Exception as e:
-            print(f"[search] email enrichment failed: {e}")
-            email_results = [{"found": False} for _ in homes]
+        future_to_index = {executor.submit(lookup, home): i for i, home in enumerate(homes)}
+        for fut in as_completed(future_to_index):
+            idx = future_to_index[fut]
+            try:
+                email_results[idx] = fut.result()
+            except Exception as e:
+                print(f"[search] email enrichment failed for home #{idx}: {e}")
+                # Other homes' results stay intact.
 
     for home, er in zip(homes, email_results):
         if er.get("found"):
@@ -731,6 +804,15 @@ def search_care_homes(postcode: str, radius_miles: int = 1, max_results: int = 5
     result: dict = {"search_area": postcode, "source": "none", "results": []}
     for step in steps:
         attempt = _attempt_search_at_radius(postcode, step, max_results, location)
+        # Bail out on upstream error (OpenAI 429/5xx, CQC outage) — there's no
+        # point retrying at a different radius if the search service itself is
+        # broken. Without this, a single OpenAI rate-limit triggers 5 paid retries.
+        if attempt.get("error") and not attempt.get("results"):
+            attempt["actual_radius_miles"] = step
+            attempt["requested_radius_miles"] = radius_miles
+            err_msg = str(attempt.get("error", ""))[:80]
+            print(f"[search] error envelope at {step}mi, bailing out: {err_msg}")
+            return attempt
         if attempt.get("results"):
             attempt["actual_radius_miles"] = step
             attempt["requested_radius_miles"] = radius_miles
@@ -833,11 +915,15 @@ def _check_email_cache(care_home_name: str, postcode: Optional[str] = None) -> O
     except Exception:
         pass
 
+    email = row["email"]
     return {
         "found": True,
-        "email": row["email"],
+        "email": email,
         "source": row.get("source") or "cached",
         "verified": bool(row.get("verified")),
+        # Re-derive from email rather than relying on cache row's flag —
+        # cheap and means we don't need to migrate the column.
+        "is_generic_inbox": _looks_like_generic(email),
     }
 
 
@@ -879,6 +965,73 @@ SCRAPE_NOISE_DOMAINS = {
 }
 
 
+# Cloud-metadata + internal-services hostnames that scraper must NEVER touch.
+SSRF_HOSTNAME_BLOCKLIST = {
+    "localhost",
+    "metadata.google.internal",
+    "metadata.azure.com",
+}
+
+
+def _is_safe_external_url(url: str) -> bool:
+    """
+    SSRF guard for _scrape_email_from_website. Rejects:
+      - non-http(s) schemes
+      - private/loopback/link-local IP literals
+      - obvious internal hostnames (localhost, *.local, cloud metadata names)
+      - hostnames that DNS-resolve to a private/loopback/link-local IP
+    NOTE: DNS-rebind attacks still possible (between resolve here and the
+    underlying requests.get). For our threat model that's acceptable —
+    attacker would need an attacker-controlled domain returning rotating IPs.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host or host in SSRF_HOSTNAME_BLOCKLIST or host.endswith(".local"):
+        return False
+
+    # IP literal in private range?
+    try:
+        ip = ipaddress.ip_address(host)
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            return False
+        return True
+    except ValueError:
+        pass  # not an IP literal — resolve and check
+
+    try:
+        addrs = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return False
+    for family, _, _, _, sockaddr in addrs:
+        ip_str = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            return False
+    return True
+
+
 def _scrape_email_from_website(website: Optional[str]) -> Optional[str]:
     """
     Fetch a care home's own website + common contact pages, regex-extract the
@@ -894,12 +1047,20 @@ def _scrape_email_from_website(website: Optional[str]) -> Optional[str]:
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
 
+    # SSRF guard: refuse to scrape anything pointing at internal infra.
+    if not _is_safe_external_url(url):
+        print(f"[scrape] refused unsafe URL: {urlparse(url).hostname}")
+        return None
+
     paths_to_try = ["", "/contact", "/contact-us", "/about/contact", "/about-us", "/about"]
     candidates: list[str] = []
 
     for path in paths_to_try:
         try:
             full_url = url.rstrip("/") + path
+            # Disable redirects — an attacker page could redirect to internal IPs
+            # after we've passed the SSRF check. If a site needs http→https
+            # we'd want to validate the redirect target first.
             resp = requests.get(
                 full_url,
                 timeout=8,
@@ -909,8 +1070,15 @@ def _scrape_email_from_website(website: Optional[str]) -> Optional[str]:
                         "looking for contact email on behalf of a young volunteer"
                     )
                 },
-                allow_redirects=True,
+                allow_redirects=False,
             )
+            # Follow ONE redirect if it's still safe
+            if 300 <= resp.status_code < 400:
+                redirect = resp.headers.get("Location")
+                if redirect and _is_safe_external_url(redirect):
+                    resp = requests.get(redirect, timeout=8, allow_redirects=False)
+                else:
+                    continue
         except Exception:
             continue
         if resp.status_code >= 400:
@@ -1247,6 +1415,38 @@ def redact_id(value: Optional[str]) -> str:
     if not value:
         return "<no-id>"
     return value[:8]
+
+
+def redact_school_name(name: Optional[str]) -> str:
+    """
+    'Westminster School' -> 'W*** S***' — keeps a hint for grepping a
+    single user's path through the logs but doesn't reveal the school.
+    School name + age + outward-code postcode can re-identify under UK GDPR.
+    """
+    if not name or not name.strip():
+        return "<no-school>"
+    words = name.strip().split()[:4]  # cap word count for log noise
+    return " ".join(w[0].upper() + "***" if len(w) > 1 else w for w in words)
+
+
+# ============================================================
+# Per-user HMAC token. Issued at /api/onboard, stored in browser localStorage,
+# sent as X-User-Token on /api/user/{id} GET+DELETE and /api/survey.
+# Treats user_id as identifier (path) and token as credential (header) so an
+# attacker who scrapes a UUID alone can't impersonate the user.
+# ============================================================
+
+def make_user_token(user_id: str) -> str:
+    """HMAC-SHA256 of user_id with EMAIL_TOKEN_SECRET → 24-byte b64url string."""
+    sig = hmac.new(EMAIL_TOKEN_SECRET.encode(), user_id.encode(), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(sig[:24]).rstrip(b"=").decode()
+
+
+def verify_user_token(user_id: str, token: str) -> bool:
+    if not token or not user_id:
+        return False
+    expected = make_user_token(user_id)
+    return hmac.compare_digest(expected, token)
 
 
 def openai_user_hash(user_id: Optional[str]) -> str:
@@ -2349,6 +2549,7 @@ SURVEY_QUESTION_FIELDS = [
 
 class OnboardResponse(BaseModel):
     user_id: str
+    user_token: str  # HMAC token — frontend stores in localStorage + sends on subsequent requests
     first_name: str
     postcode: Optional[str] = None
 
@@ -2372,6 +2573,23 @@ class MarkReplyRequest(BaseModel):
 def require_dashboard_auth(x_dashboard_password: str = Header(default="")) -> None:
     if x_dashboard_password != DASHBOARD_PASSWORD:
         raise HTTPException(status_code=401, detail="Wrong password")
+
+
+def require_user_token(
+    user_id: str,
+    x_user_token: str = Header(default=""),
+    x_dashboard_password: str = Header(default=""),
+) -> None:
+    """
+    Accepts either:
+      • X-User-Token: valid HMAC token for the path user_id (self-service), OR
+      • X-Dashboard-Password: dashboard admin password (Tony's admin actions)
+    """
+    if x_dashboard_password and x_dashboard_password == DASHBOARD_PASSWORD:
+        return
+    if verify_user_token(user_id, x_user_token):
+        return
+    raise HTTPException(status_code=401, detail="Missing or invalid credentials")
 
 
 # ---- Public endpoints ----
@@ -2550,7 +2768,11 @@ class UserMeResponse(BaseModel):
     status: Optional[str] = None
 
 
-@app.get("/api/user/{user_id}", response_model=UserMeResponse)
+@app.get(
+    "/api/user/{user_id}",
+    response_model=UserMeResponse,
+    dependencies=[Depends(require_user_token)],
+)
 def user_me_endpoint(user_id: str):
     """
     Returns the canonical user record. The frontend calls this on chat-open
@@ -2577,7 +2799,11 @@ class DeleteAccountResponse(BaseModel):
     deleted_rows: dict
 
 
-@app.delete("/api/user/{user_id}", response_model=DeleteAccountResponse)
+@app.delete(
+    "/api/user/{user_id}",
+    response_model=DeleteAccountResponse,
+    dependencies=[Depends(require_user_token)],
+)
 def delete_user_endpoint(user_id: str):
     """
     UK GDPR Art 17 (Right to Erasure). Cascades to all related rows.
@@ -2594,9 +2820,15 @@ def delete_user_endpoint(user_id: str):
 
     counts: dict[str, int] = {}
     # ON DELETE CASCADE on the foreign keys handles contacts, conversations,
-    # training_progress, email_responses. We still tally what's about to go
-    # for the response body so the user has a receipt.
-    for table in ("contacts", "conversations", "training_progress", "email_responses"):
+    # training_progress, email_responses, survey_responses. We still tally what's
+    # about to go for the response body so the user has a receipt.
+    for table in (
+        "contacts",
+        "conversations",
+        "training_progress",
+        "email_responses",
+        "survey_responses",
+    ):
         try:
             res = supabase.table(table).select("id", count="exact").eq("user_id", user_id).execute()
             counts[table] = res.count or 0
@@ -2618,17 +2850,20 @@ class GeocodeSchoolResponse(BaseModel):
 
 
 @app.get("/api/geocode-school", response_model=GeocodeSchoolResponse)
-def geocode_school_endpoint(name: str):
+@limiter.limit("30/minute")
+def geocode_school_endpoint(request: Request, name: str):
     """
     Called by Step 1 of the wizard before advancing — pre-validates that we
-    can find a postcode for the school the teen typed in. If we can't, the
-    wizard surfaces the error inline so they can fix the spelling or change
-    their search preference. No silent home fallback.
+    can find a postcode for the school the teen typed in. Strict input
+    sanitisation: strip control chars + cap length so a long name can't be
+    used to inject prompt instructions into the downstream LLM call.
     """
-    name = (name or "").strip()
-    if len(name) < 2:
+    # Strip control chars + newlines, collapse whitespace, cap length
+    cleaned = re.sub(r"[\x00-\x1f\x7f]+", " ", name or "").strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)[:120]
+    if len(cleaned) < 2:
         raise HTTPException(status_code=400, detail="Please type a school name first.")
-    geocoded = _geocode_school(name)
+    geocoded = _geocode_school(cleaned)
     if not geocoded:
         raise HTTPException(
             status_code=404,
@@ -2645,7 +2880,8 @@ class PrecomputeSearchRequest(BaseModel):
 
 
 @app.post("/api/precompute-search")
-def precompute_search_endpoint(req: PrecomputeSearchRequest):
+@limiter.limit("20/minute")
+def precompute_search_endpoint(req: PrecomputeSearchRequest, request: Request):
     """
     Warm the care_home_searches cache for a postcode while the teen is still
     filling out the survey + consent steps. The frontend fires this in the
@@ -2671,7 +2907,8 @@ def precompute_search_endpoint(req: PrecomputeSearchRequest):
 
 
 @app.post("/api/onboard", response_model=OnboardResponse)
-def onboard_endpoint(req: OnboardRequest):
+@limiter.limit("10/minute")
+def onboard_endpoint(req: OnboardRequest, request: Request):
     """Called by the pre-chat wizard. Creates or upserts user record."""
     _require_services()
 
@@ -2684,7 +2921,7 @@ def onboard_endpoint(req: OnboardRequest):
         if geocoded:
             resolved_school_postcode = geocoded["postcode"]
             print(
-                f"[onboard] Geocoded school '{req.school_name[:40]}' → "
+                f"[onboard] Geocoded school '{redact_school_name(req.school_name)}' → "
                 f"{redact_postcode(resolved_school_postcode)}"
             )
         elif req.search_preference == "school":
@@ -2716,13 +2953,18 @@ def onboard_endpoint(req: OnboardRequest):
         raise HTTPException(status_code=500, detail=f"Could not create user: {e}")
     return OnboardResponse(
         user_id=user["id"],
+        user_token=make_user_token(user["id"]),
         first_name=user["first_name"],
         postcode=user.get("postcode"),
     )
 
 
 @app.post("/api/survey")
-def survey_endpoint(req: SurveyRequest):
+@limiter.limit("20/minute")
+def survey_endpoint(req: SurveyRequest, request: Request, x_user_token: str = Header(default="")):
+    """User-token gated. Anyone with the user_id alone can't poison the slot."""
+    if not verify_user_token(req.user_id, x_user_token):
+        raise HTTPException(status_code=401, detail="Missing or invalid user token")
     """
     Store a Dementia Attitudes Scale response. Called from the onboard wizard
     AFTER /api/onboard, and (later, v1.1) at the end of a YB's journey for the

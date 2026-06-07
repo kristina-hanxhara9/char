@@ -18,6 +18,10 @@ type Token =
 const TOKEN_RE =
   /(\[([^\]\n]+)\]\(([^)\s]+)\))|(\*\*([^*\n]+)\*\*|__([^_\n]+)__)|(https?:\/\/[^\s)\]]+)|([\w.+-]+@[\w-]+\.[\w.-]+)/g;
 
+// Trailing punctuation we should strip from bare URLs + emails (they're
+// almost always sentence-final, not part of the address).
+const TRAILING_PUNCT_RE = /[.,;:!?>]+$/;
+
 function tokenize(text: string): Token[] {
   const tokens: Token[] = [];
   let lastIndex = 0;
@@ -34,11 +38,19 @@ function tokenize(text: string): Token[] {
       // **bold** or __bold__
       tokens.push({ type: "bold", value: m[5] || m[6] });
     } else if (m[7]) {
-      // bare URL
-      tokens.push({ type: "url", url: m[7] });
+      // bare URL — strip trailing sentence punctuation
+      let url = m[7];
+      const stripped = url.replace(TRAILING_PUNCT_RE, "");
+      const trailing = url.slice(stripped.length);
+      tokens.push({ type: "url", url: stripped });
+      if (trailing) tokens.push({ type: "text", value: trailing });
     } else if (m[8]) {
-      // email
-      tokens.push({ type: "email", address: m[8] });
+      // email — same treatment
+      let addr = m[8];
+      const strippedAddr = addr.replace(TRAILING_PUNCT_RE, "");
+      const trailingAddr = addr.slice(strippedAddr.length);
+      tokens.push({ type: "email", address: strippedAddr });
+      if (trailingAddr) tokens.push({ type: "text", value: trailingAddr });
     }
     lastIndex = TOKEN_RE.lastIndex;
   }

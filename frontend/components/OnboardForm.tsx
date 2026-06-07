@@ -45,10 +45,16 @@ export default function OnboardForm() {
       });
 
       // Survey is required — every field is set after Step 2.
-      await submitSurvey(onboardRes.user_id, survey as SurveyAnswers, "pre");
+      await submitSurvey(
+        onboardRes.user_id,
+        onboardRes.user_token,
+        survey as SurveyAnswers,
+        "pre"
+      );
 
       userStorage.set({
         user_id: onboardRes.user_id,
+        user_token: onboardRes.user_token,
         first_name: onboardRes.first_name,
         postcode: onboardRes.postcode || undefined,
         is_student: personal.isStudent ?? false,

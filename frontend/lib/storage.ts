@@ -4,6 +4,7 @@ const PASS_KEY = "yopey_dash_pass";
 
 export type StoredUser = {
   user_id: string;
+  user_token: string;  // HMAC token from /api/onboard — required for /api/user/{id} + /api/survey
   first_name: string;
   postcode?: string;
   is_student?: boolean;

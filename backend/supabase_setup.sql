@@ -188,6 +188,7 @@ ORDER BY count DESC;
 
 CREATE VIEW dashboard_waiting AS
 SELECT
+    c.id              AS contact_id,
     u.id              AS user_id,
     u.first_name || ' ' || COALESCE(u.surname, '') AS full_name,
     u.email,

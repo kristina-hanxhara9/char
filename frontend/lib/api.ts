@@ -157,3 +157,15 @@ export async function markReply(
     throw new Error(detail.detail || `Mark reply failed (${res.status})`);
   }
 }
+
+export async function adminDeleteUser(user_id: string): Promise<void> {
+  // Same endpoint the privacy-page self-delete uses. user_id is the only
+  // credential, so Tony can use it from the dashboard too.
+  const res = await fetch(`${API_URL}/api/user/${user_id}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `Delete failed (${res.status})`);
+  }
+}

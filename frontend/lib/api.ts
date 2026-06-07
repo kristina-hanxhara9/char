@@ -34,6 +34,20 @@ export type SurveyAnswers = {
   q10_difficult_behaviour: number;
 };
 
+export function precomputeSearch(postcode: string): Promise<void> {
+  // Fire-and-forget — the backend warms the care_home_searches cache so the
+  // auto-search on /chat returns instantly. Failures are swallowed; the
+  // /chat auto-search will retry the real search if cache is cold.
+  return fetch(`${API_URL}/api/precompute-search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ postcode }),
+    keepalive: true,
+  })
+    .then(() => undefined)
+    .catch(() => undefined);
+}
+
 export async function geocodeSchool(name: string): Promise<{ postcode: string }> {
   const res = await fetch(
     `${API_URL}/api/geocode-school?name=${encodeURIComponent(name)}`

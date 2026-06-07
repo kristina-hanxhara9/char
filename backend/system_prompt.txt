@@ -157,10 +157,15 @@ and `carehome_co_uk_url` fields:
                                               [Send Email on carehome.co.uk]({carehome_co_uk_url})
                                               or call them
 
-The carehome.co.uk link should ALWAYS appear when email is null. Use the
-home's actual carehome_co_uk_url value (NOT the generic homepage). This
-gives the teen a one-click route via carehome.co.uk's official Send Email
-form, which delivers to the care home without exposing the address.
+ALWAYS include a "directory link" line for every home, on its own line,
+even when an email was found. Use the home's actual carehome_co_uk_url:
+
+  🏛️ [The Meadows on carehome.co.uk]({carehome_co_uk_url})
+
+This is a SECOND backup route — the teen can use carehome.co.uk's official
+Send Email form even if the direct email above fails or bounces. NEVER write
+the generic "use carehome.co.uk's Send Email button" without a real link.
+The link must point to the specific home's listing, not the homepage.
 
 Important rules:
  • NEVER invent or pattern-generate an email like manager@carehomename.co.uk.
@@ -196,12 +201,22 @@ Draft a personalised introduction email. It should:
 - Be polite, warm, and under 150 words
 - Include YOPEY's contact: hello@yopey.org, 01440 821654, www.yopeybefriender.org
 
-Tell them they can:
-- Email through carehome.co.uk's "Send Email" button
-- Call the care home and ask for the manager's direct email
-- Or best of all — print the letter and hand deliver it!
+After drafting, give them their sending options as a CLEAR bullet list with
+real clickable links — never vague text like "use carehome.co.uk's button".
+Use the actual fields from the care home result:
 
-Always say: "Don't worry if the first care home doesn't reply or says no. That happens a lot! Just try the next one. PERSEVERE!"
+  📧 **Email:** if email is set → "Send to {email}" (a clickable mailto: is fine)
+  🏛️ **Via carehome.co.uk:** [Send Email to {name} via carehome.co.uk]({carehome_co_uk_url})
+     ← use the home's specific carehome_co_uk_url, never a generic link
+  📞 **Call:** if phone is set → "Ring {phone} and read the letter aloud"
+  ✉️ **Hand-deliver:** "Print the letter and drop it at {address}"
+
+Order: prefer the option you're most confident in. If we have a verified
+email, list email first. If we don't have an email, list carehome.co.uk first
+(it's their official directory — almost always works).
+
+Always say: "Don't worry if the first care home doesn't reply or says no.
+That happens a lot! Just try the next one. PERSEVERE!"
 
 == STEP 4: WHILE THEY WAIT — DEMENTIA TRAINING ==
 

@@ -2639,6 +2639,36 @@ def geocode_school_endpoint(name: str):
     return GeocodeSchoolResponse(postcode=geocoded["postcode"])
 
 
+class PrecomputeSearchRequest(BaseModel):
+    postcode: str = Field(min_length=3, max_length=10)
+
+
+@app.post("/api/precompute-search")
+def precompute_search_endpoint(req: PrecomputeSearchRequest):
+    """
+    Warm the care_home_searches cache for a postcode while the teen is still
+    filling out the survey + consent steps. The frontend fires this in the
+    background after Step 1 so when /chat opens the auto-search hits a warm
+    cache instantly (saves the 5-15s search wall-clock).
+
+    Idempotent: a cached hit short-circuits inside search_care_homes anyway.
+    Returns immediately even if the search is still running — the caller is
+    fire-and-forget.
+    """
+    _require_services()
+    try:
+        result = search_care_homes(req.postcode, radius_miles=1, max_results=5)
+    except Exception as e:
+        # Don't fail the wizard for a precompute miss — chat will retry
+        print(f"[precompute] failed for {redact_postcode(req.postcode)}: {e}")
+        return {"warmed": False}
+    return {
+        "warmed": bool(result.get("results")),
+        "found": len(result.get("results", [])),
+        "source": result.get("source"),
+    }
+
+
 @app.post("/api/onboard", response_model=OnboardResponse)
 def onboard_endpoint(req: OnboardRequest):
     """Called by the pre-chat wizard. Creates or upserts user record."""
@@ -2799,20 +2829,21 @@ def dashboard_matched():
 
 @app.get("/api/dashboard/survey-stats", dependencies=[Depends(require_dashboard_auth)])
 def dashboard_survey_stats():
-    """Per-question average across all pre-volunteering surveys, plus the latest
-    individual responses for Tony to read individually."""
+    """Per-question average across all pre-volunteering surveys."""
     res = supabase.table("survey_responses").select("*").eq("survey_type", "pre").execute()
     rows = res.data or []
-    n = len(rows)
     averages: dict[str, Optional[float]] = {}
     for q in SURVEY_QUESTION_FIELDS:
         vals = [r[q] for r in rows if r.get(q) is not None]
         averages[q] = round(sum(vals) / len(vals), 2) if vals else None
-    return {
-        "count": n,
-        "averages": averages,
-        "recent": rows[-20:][::-1] if rows else [],
-    }
+    return {"count": len(rows), "averages": averages}
+
+
+@app.get("/api/dashboard/surveys", dependencies=[Depends(require_dashboard_auth)])
+def dashboard_surveys():
+    """Individual survey responses joined with user name/email for Tony's review."""
+    res = supabase.table("dashboard_survey_pre").select("*").limit(500).execute()
+    return res.data or []
 
 
 @app.post("/api/dashboard/mark-reply", dependencies=[Depends(require_dashboard_auth)])

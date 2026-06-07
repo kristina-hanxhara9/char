@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type Dispatch, type SetStateAction } from "react";
-import { geocodeSchool } from "@/lib/api";
+import { geocodeSchool, precomputeSearch } from "@/lib/api";
 
 export type PersonalData = {
   firstName: string;
@@ -77,9 +77,9 @@ export default function Step1Personal({ data, setData, onNext }: Props) {
     setTouched(true);
     if (!canNext) return;
 
-    // If they're searching near school, pre-validate that we can find a
-    // postcode for the school name. This way the error appears here on Step 1
-    // (where they can fix it) rather than after they've completed the survey.
+    // If they're searching near school, pre-validate the school name AND
+    // capture the resolved postcode so we can warm the search cache below.
+    let searchPostcode = data.homePostcode.trim().toUpperCase();
     if (
       data.isStudent === true &&
       data.searchPreference === "school" &&
@@ -88,7 +88,8 @@ export default function Step1Personal({ data, setData, onNext }: Props) {
       setValidatingSchool(true);
       setSchoolError(null);
       try {
-        await geocodeSchool(data.schoolName.trim());
+        const { postcode } = await geocodeSchool(data.schoolName.trim());
+        searchPostcode = postcode;
       } catch (err: any) {
         setSchoolError(
           err.message ||
@@ -99,6 +100,11 @@ export default function Step1Personal({ data, setData, onNext }: Props) {
       }
       setValidatingSchool(false);
     }
+
+    // Pre-warm the care-home search in the background while they fill in the
+    // survey + consent steps. By the time they hit /chat the result is cached.
+    // Fire-and-forget — if it fails, the auto-search on /chat will just run live.
+    precomputeSearch(searchPostcode);
 
     onNext();
   }

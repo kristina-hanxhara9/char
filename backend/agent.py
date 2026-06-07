@@ -112,21 +112,14 @@ def postcode_to_latlng(postcode: str) -> dict:
     }
 
 
-def _geocode_school(school_name: str) -> Optional[dict]:
-    """
-    Look up a UK school / college / university by name and return its postcode
-    + location. Two-stage: Nominatim (OpenStreetMap) for free-text → lat/lng,
-    then postcodes.io reverse for the nearest postcode.
+UK_POSTCODE_PATTERN = re.compile(
+    r"\b(GIR\s*0AA|[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})\b",
+    re.IGNORECASE,
+)
 
-    Returns {"postcode", "latitude", "longitude", "admin_district"} or None.
 
-    Both APIs are free and don't require a key. Nominatim's ToS asks for a
-    User-Agent identifying the requester — we comply.
-    """
-    if not school_name or not school_name.strip():
-        return None
-
-    # Nominatim: free-text → lat/lng
+def _geocode_school_via_nominatim(school_name: str) -> Optional[dict]:
+    """Stage 1: Nominatim (OSM) → lat/lng → postcodes.io reverse → postcode."""
     try:
         nom_resp = requests.get(
             "https://nominatim.openstreetmap.org/search",
@@ -147,7 +140,6 @@ def _geocode_school(school_name: str) -> Optional[dict]:
         )
         nom_data = nom_resp.json()
         if not nom_data:
-            print(f"[geocode] No Nominatim match for school: {school_name[:40]}")
             return None
         lat = float(nom_data[0]["lat"])
         lon = float(nom_data[0]["lon"])
@@ -155,7 +147,6 @@ def _geocode_school(school_name: str) -> Optional[dict]:
         print(f"[geocode] Nominatim failed: {e}")
         return None
 
-    # postcodes.io: lat/lng → nearest UK postcode
     try:
         pc_resp = requests.get(
             "https://api.postcodes.io/postcodes",
@@ -164,7 +155,6 @@ def _geocode_school(school_name: str) -> Optional[dict]:
         )
         pc_data = pc_resp.json()
         if pc_data.get("status") != 200 or not pc_data.get("result"):
-            print("[geocode] postcodes.io reverse lookup returned no result")
             return None
         result = pc_data["result"][0]
         return {
@@ -176,6 +166,80 @@ def _geocode_school(school_name: str) -> Optional[dict]:
     except Exception as e:
         print(f"[geocode] postcodes.io reverse failed: {e}")
         return None
+
+
+def _geocode_school_via_web_search(school_name: str) -> Optional[dict]:
+    """
+    Stage 2: ask gpt-4o-mini-search-preview for the school's postcode, then
+    validate it via postcodes.io (so the model can't fabricate a fake postcode).
+    """
+    if not openai_client:
+        return None
+
+    prompt = (
+        f"What is the main UK postcode for the school, college, or university "
+        f"named '{school_name.strip()}'? Search the web (their official website, "
+        f"Wikipedia, gov.uk). Reply with ONLY the postcode in standard UK "
+        f"format (e.g. 'L69 3BX' or 'SL4 6DW') — nothing else. If you cannot "
+        f"find one with confidence, reply exactly 'UNKNOWN'. Never invent."
+    )
+
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini-search-preview",
+            messages=[{"role": "user", "content": prompt}],
+            web_search_options={},
+            user="yopey-school-geocode",
+        )
+        text = (response.choices[0].message.content or "").strip()
+    except Exception as e:
+        print(f"[geocode] OpenAI web search failed: {e}")
+        return None
+
+    if "UNKNOWN" in text.upper():
+        return None
+    match = UK_POSTCODE_PATTERN.search(text)
+    if not match:
+        return None
+    candidate = match.group(1).upper().strip()
+
+    # Validate: postcodes.io confirms it's a real, currently-active postcode.
+    # This catches model hallucination — a fake "AB1 2CD" will return status=404.
+    validated = postcode_to_latlng(candidate)
+    if "error" in validated:
+        print(f"[geocode] Web search returned invalid postcode for {school_name[:40]}")
+        return None
+    return {
+        "postcode": candidate,
+        "latitude": validated["latitude"],
+        "longitude": validated["longitude"],
+        "admin_district": validated.get("admin_district"),
+    }
+
+
+def _geocode_school(school_name: str) -> Optional[dict]:
+    """
+    Resolve a UK school name to a postcode. Tries free Nominatim first; if
+    that returns nothing usable, falls back to OpenAI web search and validates
+    the result against postcodes.io to prevent hallucination.
+
+    Returns {"postcode", "latitude", "longitude", "admin_district"} or None
+    when neither stage finds a confident match.
+    """
+    if not school_name or not school_name.strip():
+        return None
+
+    nominatim = _geocode_school_via_nominatim(school_name)
+    if nominatim:
+        return nominatim
+
+    print(f"[geocode] Nominatim found nothing for '{school_name[:40]}', trying web search")
+    web = _geocode_school_via_web_search(school_name)
+    if web:
+        return web
+
+    print(f"[geocode] Both stages failed for '{school_name[:40]}'")
+    return None
 
 
 def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -2548,6 +2612,33 @@ def delete_user_endpoint(user_id: str):
     return DeleteAccountResponse(status="deleted", deleted_rows=counts)
 
 
+class GeocodeSchoolResponse(BaseModel):
+    postcode: str
+
+
+@app.get("/api/geocode-school", response_model=GeocodeSchoolResponse)
+def geocode_school_endpoint(name: str):
+    """
+    Called by Step 1 of the wizard before advancing — pre-validates that we
+    can find a postcode for the school the teen typed in. If we can't, the
+    wizard surfaces the error inline so they can fix the spelling or change
+    their search preference. No silent home fallback.
+    """
+    name = (name or "").strip()
+    if len(name) < 2:
+        raise HTTPException(status_code=400, detail="Please type a school name first.")
+    geocoded = _geocode_school(name)
+    if not geocoded:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "We couldn't find that school. Please check the spelling — try "
+                "the full official name (e.g. 'University of Liverpool', not 'UoL')."
+            ),
+        )
+    return GeocodeSchoolResponse(postcode=geocoded["postcode"])
+
+
 @app.post("/api/onboard", response_model=OnboardResponse)
 def onboard_endpoint(req: OnboardRequest):
     """Called by the pre-chat wizard. Creates or upserts user record."""
@@ -2557,7 +2648,6 @@ def onboard_endpoint(req: OnboardRequest):
     # postcode from the school name. (The wizard no longer asks for school
     # postcode — most teens don't know it offhand.)
     resolved_school_postcode = req.school_postcode
-    effective_search_preference = req.search_preference
     if req.is_student and req.school_name and not resolved_school_postcode:
         geocoded = _geocode_school(req.school_name)
         if geocoded:
@@ -2566,13 +2656,15 @@ def onboard_endpoint(req: OnboardRequest):
                 f"[onboard] Geocoded school '{req.school_name[:40]}' → "
                 f"{redact_postcode(resolved_school_postcode)}"
             )
-        else:
-            # Geocoding failed. Fall back to searching near home so the chat
-            # still works — the teen can correct in chat later if needed.
-            effective_search_preference = "home"
-            print(
-                f"[onboard] Geocoding failed for school '{req.school_name[:40]}', "
-                f"falling back to home postcode search"
+        elif req.search_preference == "school":
+            # They explicitly chose school-based search and we can't find it.
+            # Don't silently switch to home — let them know so they can fix it.
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "We couldn't find a postcode for that school. Please check "
+                    "the spelling and try again, or switch to 'Near home' search."
+                ),
             )
 
     try:
@@ -2586,7 +2678,7 @@ def onboard_endpoint(req: OnboardRequest):
             school_name=req.school_name,
             school_postcode=resolved_school_postcode,
             is_student=req.is_student,
-            search_preference=effective_search_preference,
+            search_preference=req.search_preference,
             utm_source=req.utm_source,
         )
     except Exception as e:

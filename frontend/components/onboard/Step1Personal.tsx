@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type Dispatch, type SetStateAction } from "react";
+import { geocodeSchool } from "@/lib/api";
 
 export type PersonalData = {
   firstName: string;
@@ -41,6 +42,8 @@ type Props = {
 
 export default function Step1Personal({ data, setData, onNext }: Props) {
   const [touched, setTouched] = useState(false);
+  const [validatingSchool, setValidatingSchool] = useState(false);
+  const [schoolError, setSchoolError] = useState<string | null>(null);
 
   const ageNum = parseInt(data.ageStr, 10);
   const ageInvalid =
@@ -70,9 +73,38 @@ export default function Step1Personal({ data, setData, onNext }: Props) {
     setData((prev) => ({ ...prev, [key]: value }));
   }
 
-  function handleNext() {
+  async function handleNext() {
     setTouched(true);
-    if (canNext) onNext();
+    if (!canNext) return;
+
+    // If they're searching near school, pre-validate that we can find a
+    // postcode for the school name. This way the error appears here on Step 1
+    // (where they can fix it) rather than after they've completed the survey.
+    if (
+      data.isStudent === true &&
+      data.searchPreference === "school" &&
+      data.schoolName.trim().length > 1
+    ) {
+      setValidatingSchool(true);
+      setSchoolError(null);
+      try {
+        await geocodeSchool(data.schoolName.trim());
+      } catch (err: any) {
+        setSchoolError(
+          err.message ||
+            "We couldn't find that school. Check the spelling or pick 'Near home' instead."
+        );
+        setValidatingSchool(false);
+        return;
+      }
+      setValidatingSchool(false);
+    }
+
+    onNext();
+  }
+
+  function clearSchoolError() {
+    if (schoolError) setSchoolError(null);
   }
 
   // When they toggle "I'm in education" the picker default snaps to school
@@ -257,13 +289,24 @@ export default function Step1Personal({ data, setData, onNext }: Props) {
               id="schoolName"
               type="text"
               value={data.schoolName}
-              onChange={(e) => set("schoolName", e.target.value)}
+              onChange={(e) => {
+                set("schoolName", e.target.value);
+                clearSchoolError();
+              }}
               placeholder="University of Liverpool"
-              className="w-full px-4 py-3 rounded-xl border-2 border-gray-200 focus:border-yopey-primary focus:outline-none"
+              className={`w-full px-4 py-3 rounded-xl border-2 focus:outline-none transition ${
+                schoolError
+                  ? "border-red-400 focus:border-red-500"
+                  : "border-gray-200 focus:border-yopey-primary"
+              }`}
             />
-            <p className="mt-1 text-xs text-gray-500">
-              We&apos;ll find the postcode for you — no need to look it up.
-            </p>
+            {schoolError ? (
+              <p className="mt-1 text-sm text-red-600">{schoolError}</p>
+            ) : (
+              <p className="mt-1 text-xs text-gray-500">
+                We&apos;ll find the postcode for you — no need to look it up.
+              </p>
+            )}
           </div>
 
           <fieldset>
@@ -307,10 +350,10 @@ export default function Step1Personal({ data, setData, onNext }: Props) {
       <button
         type="button"
         onClick={handleNext}
-        disabled={!canNext}
+        disabled={!canNext || validatingSchool}
         className="w-full px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-md hover:bg-yopey-primaryDark transition active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed min-h-[52px]"
       >
-        Continue →
+        {validatingSchool ? "Looking up your school..." : "Continue →"}
       </button>
     </div>
   );

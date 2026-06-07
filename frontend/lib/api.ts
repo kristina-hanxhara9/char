@@ -34,6 +34,17 @@ export type SurveyAnswers = {
   q10_difficult_behaviour: number;
 };
 
+export async function geocodeSchool(name: string): Promise<{ postcode: string }> {
+  const res = await fetch(
+    `${API_URL}/api/geocode-school?name=${encodeURIComponent(name)}`
+  );
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `Couldn't find that school (${res.status})`);
+  }
+  return res.json();
+}
+
 export async function submitSurvey(
   user_id: string,
   answers: SurveyAnswers,

@@ -39,9 +39,7 @@ export default function OnboardForm() {
         home_postcode: personal.homePostcode.trim().toUpperCase(),
         is_student: personal.isStudent ?? false,
         school_name: personal.isStudent ? personal.schoolName.trim() : undefined,
-        school_postcode: personal.isStudent
-          ? personal.schoolPostcode.trim().toUpperCase()
-          : undefined,
+        // school_postcode is derived server-side from the school name
         search_preference: personal.searchPreference ?? "home",
         utm_source: utmSource,
       });

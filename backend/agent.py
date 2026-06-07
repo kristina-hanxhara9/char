@@ -112,6 +112,72 @@ def postcode_to_latlng(postcode: str) -> dict:
     }
 
 
+def _geocode_school(school_name: str) -> Optional[dict]:
+    """
+    Look up a UK school / college / university by name and return its postcode
+    + location. Two-stage: Nominatim (OpenStreetMap) for free-text → lat/lng,
+    then postcodes.io reverse for the nearest postcode.
+
+    Returns {"postcode", "latitude", "longitude", "admin_district"} or None.
+
+    Both APIs are free and don't require a key. Nominatim's ToS asks for a
+    User-Agent identifying the requester — we comply.
+    """
+    if not school_name or not school_name.strip():
+        return None
+
+    # Nominatim: free-text → lat/lng
+    try:
+        nom_resp = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={
+                "q": f"{school_name.strip()}, United Kingdom",
+                "format": "json",
+                "limit": 1,
+                "countrycodes": "gb",
+                "addressdetails": 0,
+            },
+            headers={
+                "User-Agent": (
+                    "YOPEY Befriender (https://www.yopeybefriender.org); "
+                    "geocoding school name on behalf of a volunteer"
+                )
+            },
+            timeout=10,
+        )
+        nom_data = nom_resp.json()
+        if not nom_data:
+            print(f"[geocode] No Nominatim match for school: {school_name[:40]}")
+            return None
+        lat = float(nom_data[0]["lat"])
+        lon = float(nom_data[0]["lon"])
+    except Exception as e:
+        print(f"[geocode] Nominatim failed: {e}")
+        return None
+
+    # postcodes.io: lat/lng → nearest UK postcode
+    try:
+        pc_resp = requests.get(
+            "https://api.postcodes.io/postcodes",
+            params={"lat": lat, "lon": lon, "limit": 1},
+            timeout=10,
+        )
+        pc_data = pc_resp.json()
+        if pc_data.get("status") != 200 or not pc_data.get("result"):
+            print("[geocode] postcodes.io reverse lookup returned no result")
+            return None
+        result = pc_data["result"][0]
+        return {
+            "postcode": result["postcode"],
+            "latitude": result["latitude"],
+            "longitude": result["longitude"],
+            "admin_district": result.get("admin_district"),
+        }
+    except Exception as e:
+        print(f"[geocode] postcodes.io reverse failed: {e}")
+        return None
+
+
 def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     R = 3959
     dlat = math.radians(lat2 - lat1)
@@ -2486,6 +2552,29 @@ def delete_user_endpoint(user_id: str):
 def onboard_endpoint(req: OnboardRequest):
     """Called by the pre-chat wizard. Creates or upserts user record."""
     _require_services()
+
+    # If they're a student and want to search near school, derive the school
+    # postcode from the school name. (The wizard no longer asks for school
+    # postcode — most teens don't know it offhand.)
+    resolved_school_postcode = req.school_postcode
+    effective_search_preference = req.search_preference
+    if req.is_student and req.school_name and not resolved_school_postcode:
+        geocoded = _geocode_school(req.school_name)
+        if geocoded:
+            resolved_school_postcode = geocoded["postcode"]
+            print(
+                f"[onboard] Geocoded school '{req.school_name[:40]}' → "
+                f"{redact_postcode(resolved_school_postcode)}"
+            )
+        else:
+            # Geocoding failed. Fall back to searching near home so the chat
+            # still works — the teen can correct in chat later if needed.
+            effective_search_preference = "home"
+            print(
+                f"[onboard] Geocoding failed for school '{req.school_name[:40]}', "
+                f"falling back to home postcode search"
+            )
+
     try:
         user = create_user(
             first_name=req.first_name,
@@ -2495,9 +2584,9 @@ def onboard_endpoint(req: OnboardRequest):
             phone=req.phone,
             home_postcode=req.home_postcode,
             school_name=req.school_name,
-            school_postcode=req.school_postcode,
+            school_postcode=resolved_school_postcode,
             is_student=req.is_student,
-            search_preference=req.search_preference,
+            search_preference=effective_search_preference,
             utm_source=req.utm_source,
         )
     except Exception as e:

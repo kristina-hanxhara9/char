@@ -11,7 +11,6 @@ export type PersonalData = {
   homePostcode: string;
   isStudent: boolean | null;
   schoolName: string;
-  schoolPostcode: string;
   searchPreference: "home" | "school" | null;
 };
 
@@ -24,7 +23,6 @@ export const emptyPersonal: PersonalData = {
   homePostcode: "",
   isStudent: null,
   schoolName: "",
-  schoolPostcode: "",
   searchPreference: null,
 };
 
@@ -51,10 +49,6 @@ export default function Step1Personal({ data, setData, onNext }: Props) {
   const phoneInvalid = data.phone !== "" && !PHONE_RE.test(data.phone);
   const homePostcodeInvalid =
     data.homePostcode !== "" && !UK_POSTCODE_RE.test(data.homePostcode.trim());
-  const schoolPostcodeInvalid =
-    data.isStudent === true &&
-    data.schoolPostcode !== "" &&
-    !UK_POSTCODE_RE.test(data.schoolPostcode.trim());
 
   const canNext =
     data.firstName.trim().length > 0 &&
@@ -69,10 +63,7 @@ export default function Step1Personal({ data, setData, onNext }: Props) {
     data.homePostcode.trim() !== "" &&
     !homePostcodeInvalid &&
     data.isStudent !== null &&
-    (data.isStudent === false ||
-      (data.schoolName.trim() !== "" &&
-        data.schoolPostcode.trim() !== "" &&
-        !schoolPostcodeInvalid)) &&
+    (data.isStudent === false || data.schoolName.trim() !== "") &&
     data.searchPreference !== null;
 
   function set<K extends keyof PersonalData>(key: K, value: PersonalData[K]) {
@@ -270,24 +261,9 @@ export default function Step1Personal({ data, setData, onNext }: Props) {
               placeholder="University of Liverpool"
               className="w-full px-4 py-3 rounded-xl border-2 border-gray-200 focus:border-yopey-primary focus:outline-none"
             />
-          </div>
-          <div>
-            <label htmlFor="schoolPostcode" className="block text-sm font-semibold text-gray-700 mb-1">
-              School postcode
-            </label>
-            <input
-              id="schoolPostcode"
-              type="text"
-              maxLength={10}
-              value={data.schoolPostcode}
-              onChange={(e) => set("schoolPostcode", e.target.value)}
-              placeholder="L69 3GD"
-              className={`w-full px-4 py-3 rounded-xl border-2 uppercase focus:outline-none transition ${
-                schoolPostcodeInvalid
-                  ? "border-red-400 focus:border-red-500"
-                  : "border-gray-200 focus:border-yopey-primary"
-              }`}
-            />
+            <p className="mt-1 text-xs text-gray-500">
+              We&apos;ll find the postcode for you — no need to look it up.
+            </p>
           </div>
 
           <fieldset>

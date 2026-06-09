@@ -182,7 +182,7 @@ export default function ChatWindow() {
 
   return (
     <div className="h-screen flex flex-col">
-      <header className="shrink-0 bg-yopey-goldBand px-4 md:px-6 py-3 safe-top">
+      <header className="shrink-0 bg-yopey-accent px-4 md:px-6 py-3 safe-top">
         <div className="flex items-center justify-between max-w-3xl mx-auto">
           <Link href="/" className="flex items-baseline gap-1.5">
             <span className="font-extrabold text-lg text-yopey-primaryDark tracking-wide">YOPEY</span>

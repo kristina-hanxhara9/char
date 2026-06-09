@@ -14,7 +14,7 @@ export default function Step3Consent({ submitting, error, onSubmit, onBack }: Pr
 
   return (
     <div className="space-y-5">
-      <div className="rounded-2xl border-2 border-gray-200 p-4 bg-yopey-primaryLight/40">
+      <div className="rounded-2xl border-2 border-yopey-accent/40 p-4 bg-yopey-accentLight">
         <label className="flex gap-3 items-start cursor-pointer">
           <input
             type="checkbox"

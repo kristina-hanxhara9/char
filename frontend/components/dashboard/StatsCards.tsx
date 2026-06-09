@@ -10,22 +10,22 @@ type Summary = {
   };
 };
 
-// Mirrors yopey.org's alternating gold-then-purple circle pattern:
-// gold for short-term / activity metrics, purple for cumulative / outcomes.
+// Yellow-dominant pattern: 4 yellow + 2 purple. Purple reserved for the two
+// most decisive outcomes (total reach + acceptances).
 type Card = {
   label: string;
   value: number;
-  variant: "gold" | "purple";
+  variant: "yellow" | "purple";
 };
 
 export default function StatsCards({ summary }: { summary: Summary }) {
   const cards: Card[] = [
-    { label: "Signups (last 30 days)", value: summary.signups_last_30_days, variant: "gold" },
+    { label: "Signups (last 30 days)", value: summary.signups_last_30_days, variant: "yellow" },
     { label: "Total young people", value: summary.total_young_people, variant: "purple" },
-    { label: "Care home contacts", value: summary.contacts.total, variant: "gold" },
+    { label: "Care home contacts", value: summary.contacts.total, variant: "yellow" },
     { label: "Matched (accepted)", value: summary.contacts.accepted, variant: "purple" },
-    { label: "Waiting for reply", value: summary.contacts.waiting_for_reply, variant: "gold" },
-    { label: "Rejected", value: summary.contacts.rejected, variant: "purple" },
+    { label: "Waiting for reply", value: summary.contacts.waiting_for_reply, variant: "yellow" },
+    { label: "Rejected", value: summary.contacts.rejected, variant: "yellow" },
   ];
 
   return (
@@ -35,8 +35,8 @@ export default function StatsCards({ summary }: { summary: Summary }) {
           <div key={c.label} className="flex flex-col items-center text-center">
             <div
               className={`w-24 h-24 md:w-28 md:h-28 rounded-full grid place-items-center shadow-md ${
-                c.variant === "gold"
-                  ? "bg-yopey-gold text-white"
+                c.variant === "yellow"
+                  ? "bg-yopey-accent text-yopey-primaryDark"  // WCAG: white-on-yellow fails (1.9:1); dark purple on yellow is ~8:1
                   : "bg-yopey-primary text-white"
               }`}
             >

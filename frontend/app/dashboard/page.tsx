@@ -281,7 +281,7 @@ export default function DashboardPage() {
 
   return (
     <main className="min-h-screen safe-top safe-bottom">
-      <header className="bg-yopey-goldBand px-4 md:px-6 py-4">
+      <header className="bg-yopey-accent px-4 md:px-6 py-4">
         <div className="flex items-center justify-between max-w-6xl mx-auto gap-4">
           <Link href="/" className="flex items-baseline gap-2">
             <span className="font-extrabold text-xl text-yopey-primaryDark tracking-wide">YOPEY</span>

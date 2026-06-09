@@ -11,7 +11,7 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
-  themeColor: "#D4B968",  // gold band — matches yopey.org header on mobile address bar
+  themeColor: "#FFAD00",  // brand yellow — mobile browser chrome matches header band
 };
 
 export default function RootLayout({

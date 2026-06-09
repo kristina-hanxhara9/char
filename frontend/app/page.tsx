@@ -3,7 +3,7 @@ import Link from "next/link";
 export default function LandingPage() {
   return (
     <main className="min-h-screen flex flex-col safe-top safe-bottom">
-      <header className="bg-yopey-goldBand px-6 py-5 md:px-10 md:py-6">
+      <header className="bg-yopey-accent px-6 py-5 md:px-10 md:py-6">
         <div className="flex items-center justify-between max-w-5xl mx-auto">
           <div className="flex items-baseline gap-2">
             <span className="font-extrabold text-2xl text-yopey-primaryDark tracking-wide">YOPEY</span>
@@ -98,16 +98,16 @@ export default function LandingPage() {
                 </div>
               </div>
               <div className="mt-6 grid grid-cols-3 gap-3 text-center text-xs">
-                <div className="rounded-xl bg-yopey-primaryLight p-3">
-                  <div className="font-bold text-yopey-primary">1.</div>
+                <div className="rounded-xl bg-yopey-accentLight border border-yopey-accent/30 p-3">
+                  <div className="font-bold text-yopey-primaryDark">1.</div>
                   <div className="text-gray-700 mt-1">Quick form</div>
                 </div>
-                <div className="rounded-xl bg-yopey-primaryLight p-3">
-                  <div className="font-bold text-yopey-primary">2.</div>
+                <div className="rounded-xl bg-yopey-accentLight border border-yopey-accent/30 p-3">
+                  <div className="font-bold text-yopey-primaryDark">2.</div>
                   <div className="text-gray-700 mt-1">Chat & search</div>
                 </div>
-                <div className="rounded-xl bg-yopey-primaryLight p-3">
-                  <div className="font-bold text-yopey-primary">3.</div>
+                <div className="rounded-xl bg-yopey-accentLight border border-yopey-accent/30 p-3">
+                  <div className="font-bold text-yopey-primaryDark">3.</div>
                   <div className="text-gray-700 mt-1">Email a home</div>
                 </div>
               </div>

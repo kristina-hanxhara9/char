@@ -6,7 +6,7 @@ import Link from "next/link";
 import MessageBubble from "@/components/MessageBubble";
 import TypingIndicator from "@/components/TypingIndicator";
 import ChatInput from "@/components/ChatInput";
-import { fetchUser, sendMessage } from "@/lib/api";
+import { consumeInitialChat, fetchUser, sendMessage } from "@/lib/api";
 import { userStorage, type StoredUser } from "@/lib/storage";
 
 // Tracks whether we've already auto-searched for this user in this browser
@@ -95,10 +95,15 @@ export default function ChatWindow() {
         ]);
         setPending(true);
         try {
-          const reply = await sendMessage(
-            u.user_id,
-            `Please find me 5 care homes near my postcode ${u.postcode}.`
-          );
+          // Reuse a preloaded promise if OnboardForm fired the auto-search
+          // at submit time — that way the LLM has been processing while the
+          // user navigated, and the reply is often already in.
+          const preloaded = consumeInitialChat(u.user_id);
+          const reply = await (preloaded ??
+            sendMessage(
+              u.user_id,
+              `Please find me 5 care homes near my postcode ${u.postcode}.`
+            ));
           setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
         } catch (err: any) {
           setError(err.message || "Couldn't load care homes. Try sending a message.");

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { onboard, submitSurvey, type SurveyAnswers } from "@/lib/api";
+import { onboard, preloadInitialChat, submitSurvey, type SurveyAnswers } from "@/lib/api";
 import { userStorage } from "@/lib/storage";
 import Step1Personal, { emptyPersonal, type PersonalData } from "@/components/onboard/Step1Personal";
 import Step2Survey, { emptySurvey, type SurveyData } from "@/components/onboard/Step2Survey";
@@ -86,6 +86,15 @@ export default function OnboardForm() {
         is_student: personal.isStudent ?? false,
         search_preference: personal.searchPreference ?? "home",
       });
+
+      // Fire the auto-search NOW (in the background) so the LLM is processing
+      // while the user navigates. ChatWindow awaits the same promise and
+      // renders the reply when it arrives — typically already done by the
+      // time /chat is fully painted.
+      if (onboardRes.postcode) {
+        preloadInitialChat(onboardRes.user_id, onboardRes.postcode);
+      }
+
       router.push("/chat");
     } catch (err: any) {
       setError(err.message || "Something went wrong. Please try again.");

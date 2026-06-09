@@ -134,6 +134,25 @@ export async function deleteAccount(
   return res.json();
 }
 
+// Stash for the auto-search reply that fires at /api/onboard time (NOT
+// when /chat mounts) so the LLM is processing while the user navigates.
+// ChatWindow consumes the in-flight promise and renders the reply when it
+// arrives. Saves the 5-15s "looking for care homes" wait the user sees.
+const initialChatPromises = new Map<string, Promise<string>>();
+
+export function preloadInitialChat(user_id: string, postcode: string): Promise<string> {
+  const message = `Please find me 5 care homes near my postcode ${postcode}.`;
+  const promise = sendMessage(user_id, message);
+  initialChatPromises.set(user_id, promise);
+  return promise;
+}
+
+export function consumeInitialChat(user_id: string): Promise<string> | undefined {
+  const p = initialChatPromises.get(user_id);
+  if (p) initialChatPromises.delete(user_id);
+  return p;
+}
+
 export async function sendMessage(
   user_id: string,
   message: string

@@ -3,15 +3,18 @@ import Link from "next/link";
 export default function LandingPage() {
   return (
     <main className="min-h-screen flex flex-col safe-top safe-bottom">
-      <header className="px-6 py-5 md:px-10 md:py-6">
+      <header className="bg-yopey-goldBand px-6 py-5 md:px-10 md:py-6">
         <div className="flex items-center justify-between max-w-5xl mx-auto">
-          <div className="font-bold text-xl text-yopey-primaryDark">YOPEY</div>
+          <div className="flex items-baseline gap-2">
+            <span className="font-extrabold text-2xl text-yopey-primaryDark tracking-wide">YOPEY</span>
+            <span className="text-lg text-yopey-primaryDark/80 italic">Befriender</span>
+          </div>
           <nav className="flex items-center gap-4 text-sm">
             <a
               href="https://www.yopeybefriender.org"
               target="_blank"
               rel="noreferrer"
-              className="text-gray-600 hover:text-yopey-primary"
+              className="text-yopey-primaryDark hover:text-yopey-primary font-semibold"
             >
               About
             </a>

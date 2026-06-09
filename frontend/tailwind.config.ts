@@ -8,21 +8,28 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // YOPEY corporate palette — sRGB equivalents of brand CMYK
+        // YOPEY corporate palette — primary purple + the muted gold used on yopey.org
         yopey: {
-          // Purple — CMYK C54 M100 Y0 K46
+          // Purple — matches the deep purple on yopey.org (CMYK C54 M100 Y0 K46)
           primary: "#3F008A",
-          primaryDark: "#2D0061",      // hover/pressed state, deeper purple
-          primaryLight: "#EFE5F8",     // soft tinted background for cards/highlights
-          // Yellow — CMYK C0 M32 Y100 K0. WARNING: too light for white text.
-          // Use as background with BLACK text, or as accent fill (badges, dots).
+          primaryDark: "#2D0061",      // hover/pressed state
+          primaryLight: "#EFE5F8",     // soft tinted background for cards
+          // Gold — muted dusty gold used on yopey.org's header band + "this year"
+          // stat circles. NOT the bright print yellow — that reads as too loud
+          // on screen and doesn't match the site.
+          gold: "#C4A24C",
+          goldDark: "#A88534",         // hover state on gold buttons
+          goldLight: "#F5EBD3",        // soft gold tint for highlight bands
+          goldBand: "#D4B968",         // slightly lighter — for the wide header strip
+          // Print-faithful CMYK yellow — kept for use in outgoing emails
+          // where CMYK fidelity matters (still labeled 'accent'; see emails)
           accent: "#FFAD00",
-          accentDark: "#D99100",       // hover on yellow buttons
-          accentLight: "#FFF4D6",      // soft yellow background for highlight bands
+          accentDark: "#D99100",
+          accentLight: "#FFF4D6",
           // Black — corporate 100% K
           ink: "#000000",
-          inkSoft: "#1f2937",          // for body text where pure black is too harsh
-          bg: "#FAF7FE",               // very light purple tint — body background
+          inkSoft: "#1f2937",          // softer for body text
+          bg: "#FAF7FE",               // body background, very light purple tint
         },
       },
       fontFamily: {

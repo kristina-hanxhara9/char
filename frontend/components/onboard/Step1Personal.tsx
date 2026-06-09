@@ -37,13 +37,22 @@ const PHONE_RE = /^[+\d][\d\s()-]{5,18}$/;
 type Props = {
   data: PersonalData;
   setData: Dispatch<SetStateAction<PersonalData>>;
-  onNext: () => void;
+  // We pass the eventual resolved postcode as a promise — for school-search
+  // it's still in-flight (background geocoding), for home-search it
+  // resolves immediately.
+  onNext: (postcodePromise: Promise<string>) => void;
+  // Surfaced from a prior failed submit that bounced the user back here.
+  externalSchoolError?: string | null;
 };
 
-export default function Step1Personal({ data, setData, onNext }: Props) {
+export default function Step1Personal({
+  data,
+  setData,
+  onNext,
+  externalSchoolError,
+}: Props) {
   const [touched, setTouched] = useState(false);
-  const [validatingSchool, setValidatingSchool] = useState(false);
-  const [schoolError, setSchoolError] = useState<string | null>(null);
+  const [schoolError, setSchoolError] = useState<string | null>(externalSchoolError || null);
 
   const ageNum = parseInt(data.ageStr, 10);
   const ageInvalid =
@@ -73,40 +82,27 @@ export default function Step1Personal({ data, setData, onNext }: Props) {
     setData((prev) => ({ ...prev, [key]: value }));
   }
 
-  async function handleNext() {
+  function handleNext() {
     setTouched(true);
     if (!canNext) return;
 
-    // If they're searching near school, pre-validate the school name AND
-    // capture the resolved postcode so we can warm the search cache below.
-    let searchPostcode = data.homePostcode.trim().toUpperCase();
-    if (
+    // Wrap the postcode in a promise so the survey can open INSTANTLY while
+    // school geocoding (3-15s) runs in the background. For home-search it's
+    // already resolved.
+    const postcodePromise: Promise<string> =
       data.isStudent === true &&
       data.searchPreference === "school" &&
       data.schoolName.trim().length > 1
-    ) {
-      setValidatingSchool(true);
-      setSchoolError(null);
-      try {
-        const { postcode } = await geocodeSchool(data.schoolName.trim());
-        searchPostcode = postcode;
-      } catch (err: any) {
-        setSchoolError(
-          err.message ||
-            "We couldn't find that school. Check the spelling or pick 'Near home' instead."
-        );
-        setValidatingSchool(false);
-        return;
-      }
-      setValidatingSchool(false);
-    }
+        ? geocodeSchool(data.schoolName.trim()).then((r) => r.postcode)
+        : Promise.resolve(data.homePostcode.trim().toUpperCase());
 
-    // Pre-warm the care-home search in the background while they fill in the
-    // survey + consent steps. By the time they hit /chat the result is cached.
-    // Fire-and-forget — if it fails, the auto-search on /chat will just run live.
-    precomputeSearch(searchPostcode);
+    // Pre-warm care home search cache as soon as we know the postcode.
+    // Also background — by the time the teen hits /chat, it's cached.
+    postcodePromise.then(precomputeSearch).catch(() => {});
 
-    onNext();
+    // Hand the promise to the parent and advance immediately.
+    setSchoolError(null);
+    onNext(postcodePromise);
   }
 
   function clearSchoolError() {
@@ -356,10 +352,10 @@ export default function Step1Personal({ data, setData, onNext }: Props) {
       <button
         type="button"
         onClick={handleNext}
-        disabled={!canNext || validatingSchool}
+        disabled={!canNext}
         className="w-full px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-md hover:opacity-90 transition active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed min-h-[52px]"
       >
-        {validatingSchool ? "Looking up your school..." : "Continue →"}
+        Continue →
       </button>
     </div>
   );

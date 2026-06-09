@@ -20,6 +20,11 @@ export default function OnboardForm() {
   const [survey, setSurvey] = useState<SurveyData>(emptySurvey);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The school postcode is geocoded in the background WHILE the user fills
+  // the survey. This promise is stored from Step 1's onNext and awaited on
+  // Step 3 submit. For home-search it resolves immediately.
+  const [postcodePromise, setPostcodePromise] = useState<Promise<string> | null>(null);
+  const [schoolError, setSchoolError] = useState<string | null>(null);
 
   async function handleFinalSubmit(consented: boolean) {
     if (!consented) {
@@ -28,6 +33,26 @@ export default function OnboardForm() {
     }
     setSubmitting(true);
     setError(null);
+
+    // Resolve the school postcode if we're searching near school.
+    // If the user filled the survey fast and geocoding's still running, we
+    // wait here — usually 0-5s since geocoding started ~30s+ ago at Step 1.
+    let resolvedSchoolPostcode: string | undefined;
+    if (personal.searchPreference === "school" && postcodePromise) {
+      try {
+        resolvedSchoolPostcode = await postcodePromise;
+      } catch (err: any) {
+        // School wasn't findable — bounce back to Step 1 with the error.
+        setSchoolError(
+          err.message ||
+            "We couldn't find your school. Go back and check the spelling, or pick 'Near home' instead."
+        );
+        setStep(1);
+        setSubmitting(false);
+        return;
+      }
+    }
+
     try {
       const ageNum = parseInt(personal.ageStr, 10);
       const onboardRes = await onboard({
@@ -39,7 +64,8 @@ export default function OnboardForm() {
         home_postcode: personal.homePostcode.trim().toUpperCase(),
         is_student: personal.isStudent ?? false,
         school_name: personal.isStudent ? personal.schoolName.trim() : undefined,
-        // school_postcode is derived server-side from the school name
+        // Pre-resolved client-side so backend doesn't re-geocode
+        school_postcode: resolvedSchoolPostcode,
         search_preference: personal.searchPreference ?? "home",
         utm_source: utmSource,
       });
@@ -99,7 +125,12 @@ export default function OnboardForm() {
         <Step1Personal
           data={personal}
           setData={setPersonal}
-          onNext={() => setStep(2)}
+          externalSchoolError={schoolError}
+          onNext={(promise) => {
+            setPostcodePromise(promise);
+            setSchoolError(null);
+            setStep(2);
+          }}
         />
       )}
 

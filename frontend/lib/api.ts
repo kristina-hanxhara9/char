@@ -10,6 +10,9 @@ export type OnboardPayload = {
   home_postcode: string;
   is_student: boolean;
   school_name?: string;
+  // If we resolved the school postcode client-side (via /api/geocode-school
+  // running in the background during the survey), pass it here so the backend
+  // doesn't re-geocode.
   school_postcode?: string;
   search_preference: "home" | "school";
   utm_source?: string;

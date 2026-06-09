@@ -46,7 +46,7 @@ export default function Step2Survey({ data, setData, onNext, onBack }: Props) {
 
   return (
     <div className="space-y-5">
-      <div className="rounded-2xl bg-purple-50/40 border border-purple-100 p-4">
+      <div className="rounded-2xl bg-yopey-primaryLight/40 border border-yopey-primaryLight p-4">
         <p className="font-semibold text-yopey-ink mb-1">Quick survey before you start</p>
         <p className="text-sm text-gray-700 leading-relaxed">
           YOPEY uses this short survey to understand how being a befriender changes you.

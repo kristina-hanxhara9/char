@@ -43,7 +43,7 @@ export default function StatsCards({ summary }: { summary: Summary }) {
             {Object.entries(summary.by_status).map(([k, v]) => (
               <span
                 key={k}
-                className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-purple-50 text-yopey-primary text-sm font-medium"
+                className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-yopey-primaryLight text-yopey-primary text-sm font-medium"
               >
                 {k}
                 <span className="bg-white rounded-full px-2 py-0.5 text-xs text-yopey-primaryDark">

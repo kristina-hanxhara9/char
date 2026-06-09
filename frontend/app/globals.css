@@ -16,8 +16,8 @@ body {
 }
 
 body {
-  background: #fdf4ff;
-  color: #1f2937;
+  background: #FAF7FE;     /* yopey-bg — very soft purple tint */
+  color: #1f2937;           /* yopey-inkSoft — softer than pure black for body */
 }
 
 /* Safe-area insets for notched phones */
@@ -68,6 +68,6 @@ body {
   word-wrap: break-word;
 }
 .chat-prose a {
-  color: #7c3aed;
+  color: #3F008A;           /* yopey-primary */
   text-decoration: underline;
 }

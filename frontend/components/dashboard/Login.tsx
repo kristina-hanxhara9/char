@@ -29,7 +29,7 @@ export default function DashboardLogin({ onAuth }: Props) {
     <main className="min-h-screen grid place-items-center px-6 safe-top safe-bottom">
       <form
         onSubmit={handleSubmit}
-        className="w-full max-w-sm bg-white rounded-3xl shadow-xl border border-purple-100 p-6 md:p-8 space-y-5"
+        className="w-full max-w-sm bg-white rounded-3xl shadow-xl border border-yopey-primaryLight p-6 md:p-8 space-y-5"
       >
         <div>
           <h1 className="text-2xl font-extrabold text-yopey-ink">Dashboard</h1>

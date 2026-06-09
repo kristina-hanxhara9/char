@@ -162,9 +162,9 @@ export default function PrivacyPage() {
           821654. We&apos;ll reply within a few days.
         </p>
 
-        <hr className="my-10 border-purple-100" />
+        <hr className="my-10 border-yopey-primaryLight" />
 
-        <div className="bg-white rounded-2xl border border-purple-100 p-6">
+        <div className="bg-white rounded-2xl border border-yopey-primaryLight p-6">
           <h2 className="text-xl font-bold text-yopey-ink mb-2">Delete my data</h2>
           <p className="text-gray-700 mb-4">
             This permanently removes your YOPEY account, every message you sent the

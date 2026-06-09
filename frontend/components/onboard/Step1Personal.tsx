@@ -265,7 +265,7 @@ export default function Step1Personal({ data, setData, onNext }: Props) {
             onClick={() => setIsStudent(true)}
             className={`px-4 py-3 rounded-xl border-2 font-semibold transition ${
               data.isStudent === true
-                ? "border-yopey-primary bg-purple-50 text-yopey-primaryDark"
+                ? "border-yopey-primary bg-yopey-primaryLight text-yopey-primaryDark"
                 : "border-gray-200 text-gray-700 hover:border-yopey-primary"
             }`}
           >
@@ -276,7 +276,7 @@ export default function Step1Personal({ data, setData, onNext }: Props) {
             onClick={() => setIsStudent(false)}
             className={`px-4 py-3 rounded-xl border-2 font-semibold transition ${
               data.isStudent === false
-                ? "border-yopey-primary bg-purple-50 text-yopey-primaryDark"
+                ? "border-yopey-primary bg-yopey-primaryLight text-yopey-primaryDark"
                 : "border-gray-200 text-gray-700 hover:border-yopey-primary"
             }`}
           >
@@ -286,7 +286,7 @@ export default function Step1Personal({ data, setData, onNext }: Props) {
       </fieldset>
 
       {data.isStudent === true && (
-        <div className="space-y-3 p-4 rounded-2xl bg-purple-50/40 border border-purple-100">
+        <div className="space-y-3 p-4 rounded-2xl bg-yopey-primaryLight/40 border border-yopey-primaryLight">
           <div>
             <label htmlFor="schoolName" className="block text-sm font-semibold text-gray-700 mb-1">
               School / college / university name

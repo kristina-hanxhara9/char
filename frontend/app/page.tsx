@@ -40,7 +40,7 @@ export default function LandingPage() {
             <div className="mt-8 flex flex-col sm:flex-row gap-3">
               <Link
                 href="/onboard"
-                className="inline-flex items-center justify-center px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-lg shadow-purple-200 hover:bg-yopey-primaryDark transition active:scale-[0.98] min-h-[52px]"
+                className="inline-flex items-center justify-center px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-lg shadow-yopey-primary/30 hover:bg-yopey-primaryDark transition active:scale-[0.98] min-h-[52px]"
               >
                 Find a care home →
               </Link>
@@ -60,7 +60,7 @@ export default function LandingPage() {
           </div>
 
           <div className="md:block">
-            <div className="bg-white rounded-3xl shadow-xl p-6 md:p-8 border border-purple-100">
+            <div className="bg-white rounded-3xl shadow-xl p-6 md:p-8 border border-yopey-primaryLight">
               <div className="space-y-3 text-sm">
                 <div className="flex justify-end">
                   <div className="bg-yopey-primary text-white rounded-2xl rounded-tr-md px-4 py-2.5 max-w-[80%]">
@@ -95,15 +95,15 @@ export default function LandingPage() {
                 </div>
               </div>
               <div className="mt-6 grid grid-cols-3 gap-3 text-center text-xs">
-                <div className="rounded-xl bg-purple-50 p-3">
+                <div className="rounded-xl bg-yopey-primaryLight p-3">
                   <div className="font-bold text-yopey-primary">1.</div>
                   <div className="text-gray-700 mt-1">Quick form</div>
                 </div>
-                <div className="rounded-xl bg-purple-50 p-3">
+                <div className="rounded-xl bg-yopey-primaryLight p-3">
                   <div className="font-bold text-yopey-primary">2.</div>
                   <div className="text-gray-700 mt-1">Chat & search</div>
                 </div>
-                <div className="rounded-xl bg-purple-50 p-3">
+                <div className="rounded-xl bg-yopey-primaryLight p-3">
                   <div className="font-bold text-yopey-primary">3.</div>
                   <div className="text-gray-700 mt-1">Email a home</div>
                 </div>

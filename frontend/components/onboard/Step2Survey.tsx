@@ -46,7 +46,7 @@ export default function Step2Survey({ data, setData, onNext, onBack }: Props) {
 
   return (
     <div className="space-y-5">
-      <div className="rounded-2xl bg-yopey-accentLight border border-yopey-accent/40 p-4">
+      <div className="rounded-2xl bg-yopey-accent/15 border border-yopey-accent/30 p-4">
         <p className="font-semibold text-yopey-ink mb-1">Quick survey before you start</p>
         <p className="text-sm text-gray-700 leading-relaxed">
           YOPEY uses this short survey to understand how being a befriender changes you.
@@ -123,7 +123,7 @@ export default function Step2Survey({ data, setData, onNext, onBack }: Props) {
           type="button"
           onClick={handleNext}
           disabled={!allAnswered}
-          className="flex-[2] px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-md hover:bg-yopey-primaryDark transition active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed min-h-[52px]"
+          className="flex-[2] px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-md hover:opacity-90 transition active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed min-h-[52px]"
         >
           Continue →
         </button>

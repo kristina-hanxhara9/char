@@ -14,7 +14,7 @@ export default function Step3Consent({ submitting, error, onSubmit, onBack }: Pr
 
   return (
     <div className="space-y-5">
-      <div className="rounded-2xl border-2 border-yopey-accent/40 p-4 bg-yopey-accentLight">
+      <div className="rounded-2xl border-2 border-yopey-accent/30 p-4 bg-yopey-accent/15">
         <label className="flex gap-3 items-start cursor-pointer">
           <input
             type="checkbox"
@@ -58,7 +58,7 @@ export default function Step3Consent({ submitting, error, onSubmit, onBack }: Pr
           type="button"
           onClick={() => onSubmit(consent)}
           disabled={!consent || submitting}
-          className="flex-[2] px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-md hover:bg-yopey-primaryDark transition active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed min-h-[52px]"
+          className="flex-[2] px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-md hover:opacity-90 transition active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed min-h-[52px]"
         >
           {submitting ? "Setting up..." : "Find care homes →"}
         </button>

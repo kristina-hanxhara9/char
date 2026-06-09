@@ -46,7 +46,7 @@ export default function ChatInput({ value, onChange, onSend, disabled }: Props) 
         onClick={onSend}
         disabled={!canSend}
         aria-label="Send message"
-        className="shrink-0 w-12 h-12 rounded-2xl bg-yopey-primary text-white grid place-items-center shadow-md hover:bg-yopey-primaryDark transition active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
+        className="shrink-0 w-12 h-12 rounded-2xl bg-yopey-primary text-white grid place-items-center shadow-md hover:opacity-90 transition active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
       >
         <svg
           xmlns="http://www.w3.org/2000/svg"

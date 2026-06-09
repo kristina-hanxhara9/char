@@ -185,20 +185,20 @@ export default function ChatWindow() {
       <header className="shrink-0 bg-yopey-accent px-4 md:px-6 py-3 safe-top">
         <div className="flex items-center justify-between max-w-3xl mx-auto">
           <Link href="/" className="flex items-baseline gap-1.5">
-            <span className="font-extrabold text-lg text-yopey-primaryDark tracking-wide">YOPEY</span>
-            <span className="text-base text-yopey-primaryDark/80 italic">Befriender</span>
+            <span className="font-extrabold text-lg text-yopey-primary tracking-wide">YOPEY</span>
+            <span className="text-base text-yopey-primary/80 italic">Befriender</span>
           </Link>
           <div className="flex items-center gap-1">
             <Link
               href="/privacy"
-              className="text-sm text-yopey-primaryDark hover:bg-white/30 font-semibold px-3 py-1.5 rounded-lg min-h-[44px] grid place-items-center"
+              className="text-sm text-yopey-primary hover:bg-white/30 font-semibold px-3 py-1.5 rounded-lg min-h-[44px] grid place-items-center"
             >
               Privacy
             </Link>
             <button
               type="button"
               onClick={handleEndChat}
-              className="text-sm text-yopey-primaryDark hover:bg-white/30 font-semibold px-3 py-1.5 rounded-lg min-h-[44px] min-w-[44px]"
+              className="text-sm text-yopey-primary hover:bg-white/30 font-semibold px-3 py-1.5 rounded-lg min-h-[44px] min-w-[44px]"
               title="Sign out and redo the form"
             >
               Start over
@@ -209,7 +209,7 @@ export default function ChatWindow() {
 
       <div
         ref={scrollRef}
-        className="chat-scroll flex-1 overflow-y-auto px-4 md:px-6 py-4 bg-yopey-bg"
+        className="chat-scroll flex-1 overflow-y-auto px-4 md:px-6 py-4 bg-white"
       >
         <div className="max-w-3xl mx-auto space-y-3">
           {messages.map((m, i) => (

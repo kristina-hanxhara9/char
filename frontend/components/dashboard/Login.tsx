@@ -29,7 +29,7 @@ export default function DashboardLogin({ onAuth }: Props) {
     <main className="min-h-screen grid place-items-center px-6 safe-top safe-bottom">
       <form
         onSubmit={handleSubmit}
-        className="w-full max-w-sm bg-white rounded-3xl shadow-xl border border-yopey-primaryLight p-6 md:p-8 space-y-5"
+        className="w-full max-w-sm bg-white rounded-3xl shadow-xl border border-yopey-primary/20 p-6 md:p-8 space-y-5"
       >
         <div>
           <h1 className="text-2xl font-extrabold text-yopey-ink">Dashboard</h1>
@@ -60,7 +60,7 @@ export default function DashboardLogin({ onAuth }: Props) {
         <button
           type="submit"
           disabled={submitting}
-          className="w-full px-6 py-3.5 rounded-2xl bg-yopey-primary text-white font-semibold hover:bg-yopey-primaryDark transition disabled:opacity-50 min-h-[52px]"
+          className="w-full px-6 py-3.5 rounded-2xl bg-yopey-primary text-white font-semibold hover:opacity-90 transition disabled:opacity-50 min-h-[52px]"
         >
           {submitting ? "Checking..." : "Sign in"}
         </button>

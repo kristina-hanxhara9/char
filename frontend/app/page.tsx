@@ -6,15 +6,15 @@ export default function LandingPage() {
       <header className="bg-yopey-accent px-6 py-5 md:px-10 md:py-6">
         <div className="flex items-center justify-between max-w-5xl mx-auto">
           <div className="flex items-baseline gap-2">
-            <span className="font-extrabold text-2xl text-yopey-primaryDark tracking-wide">YOPEY</span>
-            <span className="text-lg text-yopey-primaryDark/80 italic">Befriender</span>
+            <span className="font-extrabold text-2xl text-yopey-primary tracking-wide">YOPEY</span>
+            <span className="text-lg text-yopey-primary/80 italic">Befriender</span>
           </div>
           <nav className="flex items-center gap-4 text-sm">
             <a
               href="https://www.yopeybefriender.org"
               target="_blank"
               rel="noreferrer"
-              className="text-yopey-primaryDark hover:text-yopey-primary font-semibold"
+              className="text-yopey-primary hover:text-yopey-primary font-semibold"
             >
               About
             </a>
@@ -43,7 +43,7 @@ export default function LandingPage() {
             <div className="mt-8 flex flex-col sm:flex-row gap-3">
               <Link
                 href="/onboard"
-                className="inline-flex items-center justify-center px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-lg shadow-yopey-primary/30 hover:bg-yopey-primaryDark transition active:scale-[0.98] min-h-[52px]"
+                className="inline-flex items-center justify-center px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-lg shadow-yopey-primary/30 hover:opacity-90 transition active:scale-[0.98] min-h-[52px]"
               >
                 Find a care home →
               </Link>
@@ -63,7 +63,7 @@ export default function LandingPage() {
           </div>
 
           <div className="md:block">
-            <div className="bg-white rounded-3xl shadow-xl p-6 md:p-8 border border-yopey-primaryLight">
+            <div className="bg-white rounded-3xl shadow-xl p-6 md:p-8 border border-yopey-primary/20">
               <div className="space-y-3 text-sm">
                 <div className="flex justify-end">
                   <div className="bg-yopey-primary text-white rounded-2xl rounded-tr-md px-4 py-2.5 max-w-[80%]">
@@ -98,16 +98,16 @@ export default function LandingPage() {
                 </div>
               </div>
               <div className="mt-6 grid grid-cols-3 gap-3 text-center text-xs">
-                <div className="rounded-xl bg-yopey-accentLight border border-yopey-accent/30 p-3">
-                  <div className="font-bold text-yopey-primaryDark">1.</div>
+                <div className="rounded-xl bg-yopey-accent/15 border border-yopey-accent/30 p-3">
+                  <div className="font-bold text-yopey-primary">1.</div>
                   <div className="text-gray-700 mt-1">Quick form</div>
                 </div>
-                <div className="rounded-xl bg-yopey-accentLight border border-yopey-accent/30 p-3">
-                  <div className="font-bold text-yopey-primaryDark">2.</div>
+                <div className="rounded-xl bg-yopey-accent/15 border border-yopey-accent/30 p-3">
+                  <div className="font-bold text-yopey-primary">2.</div>
                   <div className="text-gray-700 mt-1">Chat & search</div>
                 </div>
-                <div className="rounded-xl bg-yopey-accentLight border border-yopey-accent/30 p-3">
-                  <div className="font-bold text-yopey-primaryDark">3.</div>
+                <div className="rounded-xl bg-yopey-accent/15 border border-yopey-accent/30 p-3">
+                  <div className="font-bold text-yopey-primary">3.</div>
                   <div className="text-gray-700 mt-1">Email a home</div>
                 </div>
               </div>

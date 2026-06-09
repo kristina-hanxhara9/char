@@ -36,7 +36,7 @@ export default function DataTable({ title, columns, rows, emptyMessage }: Props)
             </thead>
             <tbody>
               {rows.map((r, i) => (
-                <tr key={i} className="border-t border-gray-100 hover:bg-yopey-primaryLight/30">
+                <tr key={i} className="border-t border-gray-100 hover:bg-yopey-primary/10">
                   {columns.map((c) => (
                     <td key={c.key} className="px-4 py-2.5 text-gray-700">
                       {c.render ? c.render(r) : (r[c.key] ?? "—")}

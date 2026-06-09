@@ -8,24 +8,18 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // YOPEY brand palette — sRGB equivalents of the brand-book CMYK values.
-        // Theme is YELLOW-DOMINANT: yellow chrome + purple anchors.
+        // YOPEY brand palette — STRICT two-colour. The brand book lists only
+        // these two values; we don't manufacture lighter/darker variants.
+        // For tints: use Tailwind opacity modifiers (e.g. bg-yopey-accent/15).
+        // For hovers: use hover:opacity-90 instead of a darker shade.
         yopey: {
-          // Purple — CMYK C54 M100 Y0 K46. Used for primary CTAs, key links,
-          // and brand identifier text. White text on this passes AAA (14.9:1).
+          // Purple — CMYK C54 M100 Y0 K46
           primary: "#3F008A",
-          primaryDark: "#2D0061",      // hover/pressed
-          primaryLight: "#EFE5F8",     // light tints (form borders, hover backgrounds)
-          // Yellow — CMYK C0 M32 Y100 K0. Dominant chrome colour: header bands,
-          // stat circles, callout backgrounds, badges. Pair with BLACK or
-          // PURPLE text — never white (1.9:1 fails WCAG).
+          // Yellow — CMYK C0 M32 Y100 K0
           accent: "#FFAD00",
-          accentDark: "#D99100",       // hover on yellow buttons
-          accentLight: "#FFF4D6",      // very soft yellow for highlight bands + soft cards
-          // Black — corporate 100% K
-          ink: "#000000",
-          inkSoft: "#1f2937",          // softer for body text
-          bg: "#FFFBF0",               // very subtle warm cream — neutral but yellow-leaning
+          // Text only (not brand colours; standard for legibility)
+          ink: "#000000",          // headings
+          inkSoft: "#1f2937",      // body text — pure black is harsh at 14-16px
         },
       },
       fontFamily: {

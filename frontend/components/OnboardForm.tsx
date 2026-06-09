@@ -70,7 +70,7 @@ export default function OnboardForm() {
   return (
     <form
       onSubmit={(e) => e.preventDefault()}
-      className="w-full max-w-md bg-white rounded-3xl shadow-xl border border-yopey-primaryLight p-6 md:p-8 space-y-5"
+      className="w-full max-w-md bg-white rounded-3xl shadow-xl border border-yopey-primary/20 p-6 md:p-8 space-y-5"
     >
       <div>
         <div className="flex items-center gap-2 mb-3" aria-label={`Step ${step} of 3`}>

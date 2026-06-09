@@ -36,7 +36,7 @@ export default function StatsCards({ summary }: { summary: Summary }) {
             <div
               className={`w-24 h-24 md:w-28 md:h-28 rounded-full grid place-items-center shadow-md ${
                 c.variant === "yellow"
-                  ? "bg-yopey-accent text-yopey-primaryDark"  // WCAG: white-on-yellow fails (1.9:1); dark purple on yellow is ~8:1
+                  ? "bg-yopey-accent text-yopey-primary"  // WCAG: white-on-yellow fails (1.9:1); dark purple on yellow is ~8:1
                   : "bg-yopey-primary text-white"
               }`}
             >
@@ -58,10 +58,10 @@ export default function StatsCards({ summary }: { summary: Summary }) {
             {Object.entries(summary.by_status).map(([k, v]) => (
               <span
                 key={k}
-                className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-yopey-primaryLight text-yopey-primary text-sm font-medium"
+                className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-yopey-primary/10 text-yopey-primary text-sm font-medium"
               >
                 {k}
-                <span className="bg-white rounded-full px-2 py-0.5 text-xs text-yopey-primaryDark">
+                <span className="bg-white rounded-full px-2 py-0.5 text-xs text-yopey-primary">
                   {v}
                 </span>
               </span>

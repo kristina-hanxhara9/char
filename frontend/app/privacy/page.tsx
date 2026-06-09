@@ -45,10 +45,10 @@ export default function PrivacyPage() {
       <header className="bg-yopey-accent px-6 py-5 md:px-10 md:py-6">
         <div className="flex items-center justify-between max-w-3xl mx-auto">
           <Link href="/" className="flex items-baseline gap-2">
-            <span className="font-extrabold text-2xl text-yopey-primaryDark tracking-wide">YOPEY</span>
-            <span className="text-lg text-yopey-primaryDark/80 italic">Befriender</span>
+            <span className="font-extrabold text-2xl text-yopey-primary tracking-wide">YOPEY</span>
+            <span className="text-lg text-yopey-primary/80 italic">Befriender</span>
           </Link>
-          <Link href="/" className="text-sm text-yopey-primaryDark hover:text-yopey-primary font-semibold">
+          <Link href="/" className="text-sm text-yopey-primary hover:text-yopey-primary font-semibold">
             ← Back
           </Link>
         </div>
@@ -163,9 +163,9 @@ export default function PrivacyPage() {
           821654. We&apos;ll reply within a few days.
         </p>
 
-        <hr className="my-10 border-yopey-primaryLight" />
+        <hr className="my-10 border-yopey-primary/20" />
 
-        <div className="bg-white rounded-2xl border border-yopey-primaryLight p-6">
+        <div className="bg-white rounded-2xl border border-yopey-primary/20 p-6">
           <h2 className="text-xl font-bold text-yopey-ink mb-2">Delete my data</h2>
           <p className="text-gray-700 mb-4">
             This permanently removes your YOPEY account, every message you sent the

@@ -284,19 +284,19 @@ export default function DashboardPage() {
       <header className="bg-yopey-accent px-4 md:px-6 py-4">
         <div className="flex items-center justify-between max-w-6xl mx-auto gap-4">
           <Link href="/" className="flex items-baseline gap-2">
-            <span className="font-extrabold text-xl text-yopey-primaryDark tracking-wide">YOPEY</span>
-            <span className="text-base text-yopey-primaryDark/80 italic">Befriender · Dashboard</span>
+            <span className="font-extrabold text-xl text-yopey-primary tracking-wide">YOPEY</span>
+            <span className="text-base text-yopey-primary/80 italic">Befriender · Dashboard</span>
           </Link>
           <div className="flex items-center gap-2">
             <button
               onClick={reloadCurrentTab}
-              className="text-sm text-yopey-primaryDark hover:bg-white/30 font-semibold px-3 py-2 rounded-lg min-h-[40px]"
+              className="text-sm text-yopey-primary hover:bg-white/30 font-semibold px-3 py-2 rounded-lg min-h-[40px]"
             >
               Refresh
             </button>
             <button
               onClick={signOut}
-              className="text-sm text-yopey-primaryDark hover:bg-white/30 font-semibold px-3 py-2 rounded-lg min-h-[40px]"
+              className="text-sm text-yopey-primary hover:bg-white/30 font-semibold px-3 py-2 rounded-lg min-h-[40px]"
             >
               Sign out
             </button>

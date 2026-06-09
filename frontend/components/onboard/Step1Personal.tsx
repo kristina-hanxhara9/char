@@ -265,7 +265,7 @@ export default function Step1Personal({ data, setData, onNext }: Props) {
             onClick={() => setIsStudent(true)}
             className={`px-4 py-3 rounded-xl border-2 font-semibold transition ${
               data.isStudent === true
-                ? "border-yopey-primary bg-yopey-accentLight text-yopey-primaryDark"
+                ? "border-yopey-primary bg-yopey-accent/15 text-yopey-primary"
                 : "border-gray-200 text-gray-700 hover:border-yopey-primary"
             }`}
           >
@@ -276,7 +276,7 @@ export default function Step1Personal({ data, setData, onNext }: Props) {
             onClick={() => setIsStudent(false)}
             className={`px-4 py-3 rounded-xl border-2 font-semibold transition ${
               data.isStudent === false
-                ? "border-yopey-primary bg-yopey-accentLight text-yopey-primaryDark"
+                ? "border-yopey-primary bg-yopey-accent/15 text-yopey-primary"
                 : "border-gray-200 text-gray-700 hover:border-yopey-primary"
             }`}
           >
@@ -286,7 +286,7 @@ export default function Step1Personal({ data, setData, onNext }: Props) {
       </fieldset>
 
       {data.isStudent === true && (
-        <div className="space-y-3 p-4 rounded-2xl bg-yopey-accentLight border border-yopey-accent/30">
+        <div className="space-y-3 p-4 rounded-2xl bg-yopey-accent/15 border border-yopey-accent/30">
           <div>
             <label htmlFor="schoolName" className="block text-sm font-semibold text-gray-700 mb-1">
               School / college / university name
@@ -325,7 +325,7 @@ export default function Step1Personal({ data, setData, onNext }: Props) {
                 onClick={() => set("searchPreference", "school")}
                 className={`px-3 py-3 rounded-xl border-2 text-sm font-semibold transition ${
                   data.searchPreference === "school"
-                    ? "border-yopey-primary bg-white text-yopey-primaryDark"
+                    ? "border-yopey-primary bg-white text-yopey-primary"
                     : "border-gray-200 text-gray-700 hover:border-yopey-primary bg-white"
                 }`}
               >
@@ -336,7 +336,7 @@ export default function Step1Personal({ data, setData, onNext }: Props) {
                 onClick={() => set("searchPreference", "home")}
                 className={`px-3 py-3 rounded-xl border-2 text-sm font-semibold transition ${
                   data.searchPreference === "home"
-                    ? "border-yopey-primary bg-white text-yopey-primaryDark"
+                    ? "border-yopey-primary bg-white text-yopey-primary"
                     : "border-gray-200 text-gray-700 hover:border-yopey-primary bg-white"
                 }`}
               >
@@ -357,7 +357,7 @@ export default function Step1Personal({ data, setData, onNext }: Props) {
         type="button"
         onClick={handleNext}
         disabled={!canNext || validatingSchool}
-        className="w-full px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-md hover:bg-yopey-primaryDark transition active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed min-h-[52px]"
+        className="w-full px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-md hover:opacity-90 transition active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed min-h-[52px]"
       >
         {validatingSchool ? "Looking up your school..." : "Continue →"}
       </button>

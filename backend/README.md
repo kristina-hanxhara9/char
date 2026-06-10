@@ -30,7 +30,7 @@ Dashboard endpoints require `X-Dashboard-Password: <DASHBOARD_PASSWORD>` header.
 
 ## LLM tools
 
-The chat exposes three tools to GPT-4o-mini (it decides when to call them):
+The chat exposes seven tools to Gemini (it decides when to call them). The core three:
 
 1. **`search_care_homes(postcode, radius_miles?, max_results?)`** — live CQC API search via postcodes.io for geocoding.
 2. **`save_user_details(surname?, email?, postcode?, school?, stage?)`** — persists user fields collected mid-conversation.

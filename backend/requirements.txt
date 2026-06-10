@@ -1,9 +1,9 @@
-openai==1.82.0
-supabase==2.10.0
+google-genai==2.8.0
+supabase==2.31.0  # 2.10 pinned httpx<0.28, conflicting with google-genai
 fastapi==0.115.0
 uvicorn[standard]==0.30.0
 requests==2.32.3
-pydantic[email]==2.9.0
+pydantic[email]==2.11.7  # minimum for supabase 2.31's realtime dependency
 slowapi==0.1.9
 resend==2.4.0
 python-dotenv==1.0.1

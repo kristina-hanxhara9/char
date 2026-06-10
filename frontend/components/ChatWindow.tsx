@@ -62,7 +62,7 @@ export default function ChatWindow() {
   // If postcode is on file AND we haven't already auto-searched this session,
   // kick off an automatic care-home search so the teen lands on a real result
   // instead of a question. Refreshes / re-mounts within the same session reuse
-  // the prior search (no fresh OpenAI call, no history pollution).
+  // the prior search (no fresh LLM call, no history pollution).
   useEffect(() => {
     if (initFiredRef.current) return;
     initFiredRef.current = true;

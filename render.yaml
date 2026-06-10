@@ -13,7 +13,7 @@ services:
         value: 3.11.10
       # Secrets — set these manually in the Render dashboard (sync: false means
       # render.yaml won't overwrite or expose them)
-      - key: OPENAI_API_KEY
+      - key: GEMINI_API_KEY
         sync: false
       - key: SUPABASE_URL
         sync: false

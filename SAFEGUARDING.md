@@ -100,9 +100,10 @@ contacts the bot ever surfaces are the named helplines above.
   disclosed in the privacy notice (`/privacy`), satisfying UK GDPR Art 13.
 - **Explicit consent:** the onboarding wizard requires an explicit, unticked-by-
   default consent checkbox before any data is stored.
-- **No model training:** OpenAI API data is excluded from training by default
-  (since March 2023); each call also passes a hashed `user` identifier for
-  abuse monitoring without exposing the user's id.
+- **No model training:** chat runs on Google's Gemini API under a paid
+  (billing-enabled) project, where Google does not use prompts or responses
+  to train its models. **Keep the key on the paid tier** — the free tier's
+  terms allow Google to use submitted data to improve its products.
 - **Right to erasure:** any young person can delete their entire record
   (account, chat history, contacts, surveys, alerts) from `/privacy`. The DSL
   can also delete from the dashboard.
@@ -141,8 +142,8 @@ These are organisational, not software, tasks:
 2. **Confirm the escalation procedure** the DSL follows when an alert arrives
    (e.g. contact the young person, contact parents/school, contact the LADO or
    police if needed) — the software raises the flag; the human process handles it.
-3. **Sign Data Processing Agreements** with OpenAI, Supabase, Resend, Vercel,
-   Render.
+3. **Sign Data Processing Agreements** with Google (Gemini API), Supabase,
+   Resend, Vercel, Render.
 4. **Complete a DPIA** (the ICO requires one for processing children's data) —
    this document plus the privacy notice provide most of the content.
 5. **Register with the ICO** as a data controller (~£40/year for charities).

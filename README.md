@@ -12,7 +12,7 @@ frontend/     Next.js 14 site (landing, onboard form, chat, admin dashboard)
 ## Features
 
 - **Pre-chat form** — collects first name + age (16+ gate)
-- **Chat** — GPT-4o-mini conversation that collects surname, postcode, email naturally
+- **Chat** — Gemini (gemini-3.5-flash) conversation that collects surname, postcode, email naturally
 - **Care home search** — live CQC API, returns 5 nearest care homes by distance
 - **Email drafting** — bot writes personalised intro letters
 - **Escalating nudges** — automated reminder emails at 3, 5, 7, 10 days
@@ -34,7 +34,7 @@ cd backend
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# Edit .env with your keys (OpenAI, Supabase, Resend, dashboard password)
+# Edit .env with your keys (Gemini, Supabase, Resend, dashboard password)
 python agent.py
 # server now on http://localhost:8000
 ```
@@ -72,7 +72,7 @@ Example crontab — 9am UTC daily:
 
 | Var | Required | Notes |
 |-----|----------|-------|
-| `OPENAI_API_KEY` | Yes | from platform.openai.com |
+| `GEMINI_API_KEY` | Yes | from aistudio.google.com — use a billing-enabled project (paid tier excludes data from training) |
 | `SUPABASE_URL` | Yes | https://xxxxx.supabase.co |
 | `SUPABASE_KEY` | Yes | **service_role** key |
 | `RESEND_API_KEY` | For nudges | resend.com |
@@ -120,7 +120,7 @@ Example crontab — 9am UTC daily:
 | Item | Cost |
 |------|------|
 | Supabase | Free tier |
-| OpenAI GPT-4o-mini | ~£5/month for hundreds of conversations |
+| Gemini (3.5 Flash chat + grounded search) | ~£5/month for hundreds of conversations; web searches free under 5,000 grounded prompts/month, then $14/1k |
 | Vercel | Free tier |
 | Railway | ~£5/month for backend + cron |
 | Resend | Free (100/day, 3k/month) |

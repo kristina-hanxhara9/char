@@ -97,7 +97,7 @@ CREATE TABLE email_responses (
 CREATE INDEX idx_email_responses_user ON email_responses (user_id, stage);
 
 -- 7. CARE HOME SEARCHES — cache results for the same postcode so we don't
--- re-pay for OpenAI web-search calls. 7-day TTL enforced at application layer.
+-- re-pay for grounded web-search calls. 7-day TTL enforced at application layer.
 CREATE TABLE care_home_searches (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     postcode TEXT NOT NULL,              -- normalized: uppercase, no spaces

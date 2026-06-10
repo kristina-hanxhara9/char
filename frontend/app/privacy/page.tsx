@@ -114,9 +114,10 @@ export default function PrivacyPage() {
             <strong>Supabase</strong> (database, hosted in London) — stores everything.
           </li>
           <li>
-            <strong>OpenAI</strong> (the AI chatbot, US-based, with EU standard
-            contractual clauses) — sees the chat messages so it can reply. OpenAI
-            confirms API data is <strong>not</strong> used to train their models.
+            <strong>Google</strong> (the AI chatbot — Gemini, US-based, with EU
+            standard contractual clauses) — sees the chat messages so it can reply.
+            We use Google&apos;s paid API tier, where chat data is{" "}
+            <strong>not</strong> used to train their models.
           </li>
           <li>
             <strong>Resend</strong> (sends the reminder emails) — sees your email

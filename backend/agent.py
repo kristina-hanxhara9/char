@@ -1,7 +1,7 @@
 """
 YOPEY Befriender AI Agent
 =========================
-FastAPI backend with: Supabase database, GPT-4o-mini chat with tool use,
+FastAPI backend with: Supabase database, Gemini chat with tool use,
 live CQC care home search, escalating nudge reminders (3/5/7/10 days),
 and dashboard endpoints.
 """
@@ -26,7 +26,8 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
-from openai import OpenAI
+from google import genai
+from google.genai import types as genai_types
 from pydantic import BaseModel, EmailStr, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -43,19 +44,19 @@ load_dotenv()
 def _real_env(name: str) -> str | None:
     """Return an env var only if it's non-empty AND doesn't look like a placeholder."""
     v = os.environ.get(name, "").strip()
-    if not v or v.startswith(("xxxx", "sk-...", "re_...", "eyJ...", "https://xxxx")):
+    if not v or v.startswith(("xxxx", "sk-...", "AIza...", "re_...", "eyJ...", "https://xxxx")):
         return None
     return v
 
 
-OPENAI_KEY = _real_env("OPENAI_API_KEY")
+GEMINI_KEY = _real_env("GEMINI_API_KEY")
 SUPABASE_URL = _real_env("SUPABASE_URL")
 SUPABASE_KEY = _real_env("SUPABASE_KEY")
 RESEND_API_KEY = _real_env("RESEND_API_KEY")
 EMAIL_FROM = os.environ.get("EMAIL_FROM", "YOPEY Befriender <hello@yopey.org>")
 CQC_PARTNER_CODE = os.environ.get("CQC_PARTNER_CODE", "").strip()
 # Subscription key from CQC API portal (apply at api-portal.service.cqc.org.uk).
-# Without this, CQC returns 403 — we fall back to OpenAI web search.
+# Without this, CQC returns 403 — we fall back to Gemini web search.
 CQC_SUBSCRIPTION_KEY = os.environ.get("CQC_SUBSCRIPTION_KEY", "").strip()
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "changeme")
 EMAIL_TOKEN_SECRET = os.environ.get("EMAIL_TOKEN_SECRET") or DASHBOARD_PASSWORD
@@ -79,13 +80,19 @@ ALLOWED_ORIGINS = [
     o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
 ]
 
-if not (OPENAI_KEY and SUPABASE_URL and SUPABASE_KEY):
+if not (GEMINI_KEY and SUPABASE_URL and SUPABASE_KEY):
     print(
-        "[warn] Missing real OPENAI_API_KEY / SUPABASE_URL / SUPABASE_KEY — "
+        "[warn] Missing real GEMINI_API_KEY / SUPABASE_URL / SUPABASE_KEY — "
         "server will start but /api/onboard and /api/chat will return 503."
     )
 
-openai_client: Optional[OpenAI] = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
+# 60s cap: google-genai sets no default timeout, and /api/chat is synchronous
+# — a hung call must not pin a worker.
+gemini_client: Optional[genai.Client] = (
+    genai.Client(api_key=GEMINI_KEY, http_options=genai_types.HttpOptions(timeout=60_000))
+    if GEMINI_KEY
+    else None
+)
 supabase: Optional[Client] = None
 if SUPABASE_URL and SUPABASE_KEY:
     try:
@@ -95,10 +102,10 @@ if SUPABASE_URL and SUPABASE_KEY:
 
 
 def _require_services() -> None:
-    if not (openai_client and supabase):
+    if not (gemini_client and supabase):
         raise HTTPException(
             status_code=503,
-            detail="Server not fully configured. Set OPENAI_API_KEY, SUPABASE_URL, SUPABASE_KEY in backend/.env.",
+            detail="Server not fully configured. Set GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY in backend/.env.",
         )
 
 _PROMPT_PATH = os.path.join(os.path.dirname(__file__), "system_prompt.txt")
@@ -108,6 +115,32 @@ with open(_PROMPT_PATH, "r") as f:
 
 # Keep last N message pairs in the LLM context — bounds token cost
 MAX_LLM_HISTORY = 40  # 20 user/assistant turns
+
+# Gemini can't combine google_search grounding with custom function
+# declarations in one request, so the chat brain (custom tools only) and the
+# web-search helpers (grounding only) stay on separate models and configs.
+BRAIN_MODEL = "gemini-3.5-flash"        # agentic tool use + safeguarding judgement
+SEARCH_MODEL = "gemini-3.1-flash-lite"  # cheap Google-Search-grounded lookups
+
+GOOGLE_SEARCH_TOOL = genai_types.Tool(google_search=genai_types.GoogleSearch())
+
+
+def _grounded_search(prompt: str, *, response_schema: Optional[dict] = None) -> str:
+    """
+    One Google-Search-grounded SEARCH_MODEL call → response text.
+    `response_schema` switches on JSON mode (supported alongside grounding on
+    Gemini 3 models). Raises on API errors — callers keep their own
+    try/except shells and error envelopes.
+    """
+    config = genai_types.GenerateContentConfig(
+        tools=[GOOGLE_SEARCH_TOOL],
+        response_mime_type="application/json" if response_schema else None,
+        response_schema=response_schema,
+    )
+    response = gemini_client.models.generate_content(
+        model=SEARCH_MODEL, contents=prompt, config=config
+    )
+    return (response.text or "").strip()
 
 
 # ============================================================
@@ -188,10 +221,10 @@ def _geocode_school_via_nominatim(school_name: str) -> Optional[dict]:
 
 def _geocode_school_via_web_search(school_name: str) -> Optional[dict]:
     """
-    Stage 2: ask gpt-4o-mini-search-preview for the school's postcode, then
+    Stage 2: ask Google-Search-grounded Gemini for the school's postcode, then
     validate it via postcodes.io (so the model can't fabricate a fake postcode).
     """
-    if not openai_client:
+    if not gemini_client:
         return None
 
     prompt = (
@@ -203,15 +236,9 @@ def _geocode_school_via_web_search(school_name: str) -> Optional[dict]:
     )
 
     try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini-search-preview",
-            messages=[{"role": "user", "content": prompt}],
-            web_search_options={},
-            user="yopey-school-geocode",
-        )
-        text = (response.choices[0].message.content or "").strip()
+        text = _grounded_search(prompt)
     except Exception as e:
-        print(f"[geocode] OpenAI web search failed: {e}")
+        print(f"[geocode] Gemini web search failed: {e}")
         return None
 
     if "UNKNOWN" in text.upper():
@@ -273,7 +300,7 @@ def _save_school_cache(school_name: str, postcode: str, source: str) -> None:
 def _geocode_school(school_name: str) -> Optional[dict]:
     """
     Resolve a UK school name to a postcode. Checks cache first, then Nominatim,
-    then OpenAI web search (validated against postcodes.io to prevent
+    then Gemini web search (validated against postcodes.io to prevent
     hallucination). Cached results persist across the wizard's two calls
     (geocode-school + onboard) so we don't re-pay.
     """
@@ -512,6 +539,53 @@ def _extract_json_object(text: str) -> Optional[dict]:
     return None
 
 
+def _parse_json_response(text: str) -> Optional[dict]:
+    """
+    Parse a JSON-mode model response. Should be a bare object, but fall back to
+    the brace-walker for fenced or prose-wrapped output.
+    """
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+    return _extract_json_object(text)
+
+
+# Forces JSON-mode output from the grounded care-home search. Only `name` is
+# required — the setdefault normalisation below fills the rest, matching how
+# gaps were handled before.
+CARE_HOMES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "care_homes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "address": {"type": "string"},
+                    "postcode": {"type": "string"},
+                    "phone": {"type": "string"},
+                    "manager": {"type": "string"},
+                    "cqc_rating": {"type": "string"},
+                    "distance_miles": {"type": "number"},
+                    "website": {"type": "string", "nullable": True},
+                    "cqc_url": {"type": "string", "nullable": True},
+                    "service_types": {"type": "array", "items": {"type": "string"}},
+                    "specialisms": {"type": "array", "items": {"type": "string"}},
+                    "number_of_beds": {"type": "integer", "nullable": True},
+                    "last_inspection_date": {"type": "string", "nullable": True},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    "required": ["care_homes"],
+}
+
+
 def _search_care_homes_via_web(
     postcode: str,
     max_results: int = 5,
@@ -519,20 +593,20 @@ def _search_care_homes_via_web(
     prefetched_location: Optional[dict] = None,
 ) -> dict:
     """
-    Fallback when CQC API isn't authorised. Uses gpt-4o-mini-search-preview to
-    find currently-operating UK care homes near the postcode via public web sources
-    (carehome.co.uk, CQC's public listings, etc.). Less structured than CQC API
-    but reliably available.
+    Fallback when CQC API isn't authorised. Uses Google-Search-grounded Gemini
+    to find currently-operating UK care homes near the postcode via public web
+    sources (carehome.co.uk, CQC's public listings, etc.). Less structured than
+    CQC API but reliably available.
 
     `prefetched_location` lets the dispatcher resolve the postcode once and
     share the result with both CQC and web paths instead of re-calling
     postcodes.io.
     """
-    if not openai_client:
-        return {"error": "OpenAI not configured", "results": []}
+    if not gemini_client:
+        return {"error": "Gemini not configured", "results": []}
 
     location = prefetched_location if prefetched_location is not None else postcode_to_latlng(postcode)
-    # Bail early on a known-bad postcode — don't burn a paid search-preview call
+    # Bail early on a known-bad postcode — don't burn a grounded search call
     # only to have the model guess at an area that doesn't exist.
     if "error" in location:
         return {
@@ -585,18 +659,11 @@ def _search_care_homes_via_web(
     )
 
     try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini-search-preview",
-            messages=[{"role": "user", "content": prompt}],
-            web_search_options={},
-            user="yopey-search-anon",  # care-home search isn't tied to a specific user
-        )
-        text = (response.choices[0].message.content or "").strip()
+        text = _grounded_search(prompt, response_schema=CARE_HOMES_SCHEMA)
     except Exception as e:
         return {"error": f"Web search error: {e}", "results": []}
 
-    # Robust JSON extraction (handles markdown fences, multi-brace prose)
-    data = _extract_json_object(text)
+    data = _parse_json_response(text)
     if data is None:
         return {"error": "Web search returned no parseable JSON", "results": [], "raw": text[:300]}
 
@@ -706,8 +773,9 @@ def _enrich_with_emails(homes: list[dict], fallback_postcode: str) -> None:
     to include the email, plus metadata about its confidence.
 
     Cache hits (verified Tony-seeded contacts + prior lookups) cost nothing.
-    Uncached lookups go to OpenAI web search (~$0.025 each). Parallel so the
-    user doesn't wait 15s for 5 sequential lookups.
+    Uncached lookups go to Gemini grounded web search (free under the monthly
+    grounding quota, then paid). Parallel so the user doesn't wait 15s for 5
+    sequential lookups.
 
     Defined as a closure-free helper so search_care_homes can call it on every
     fresh result, baking emails directly into the cached payload — the LLM
@@ -733,7 +801,7 @@ def _enrich_with_emails(homes: list[dict], fallback_postcode: str) -> None:
             website=home.get("website"),
         )
 
-    # max_workers=5 matches our typical max_results — caps concurrent OpenAI calls.
+    # max_workers=5 matches our typical max_results — caps concurrent Gemini calls.
     # Use submit + as_completed with per-future try/except so a single failed
     # lookup never nukes the whole batch's successful results.
     email_results: list[dict] = [{"found": False} for _ in homes]
@@ -819,9 +887,9 @@ def search_care_homes(postcode: str, radius_miles: int = 1, max_results: int = 5
     result: dict = {"search_area": postcode, "source": "none", "results": []}
     for step in steps:
         attempt = _attempt_search_at_radius(postcode, step, max_results, location)
-        # Bail out on upstream error (OpenAI 429/5xx, CQC outage) — there's no
+        # Bail out on upstream error (Gemini 429/5xx, CQC outage) — there's no
         # point retrying at a different radius if the search service itself is
-        # broken. Without this, a single OpenAI rate-limit triggers 5 paid retries.
+        # broken. Without this, a single Gemini rate-limit triggers 5 wasted retries.
         if attempt.get("error") and not attempt.get("results"):
             attempt["actual_radius_miles"] = step
             attempt["requested_radius_miles"] = radius_miles
@@ -846,9 +914,9 @@ def search_care_homes(postcode: str, radius_miles: int = 1, max_results: int = 5
 
 
 # ============================================================
-# PART 1b: EMAIL LOOKUP TOOL (OpenAI built-in web search)
+# PART 1b: EMAIL LOOKUP TOOL (Gemini grounded web search)
 # ============================================================
-# Uses gpt-4o-mini-search-preview to search the web for a care home's
+# Uses Google-Search-grounded Gemini to search the web for a care home's
 # manager email. Results cached in care_home_emails table so we never
 # pay for the same lookup twice. Tony's manually-confirmed emails go
 # in the same table with source='tony_seed' and verified=true, so
@@ -1142,12 +1210,12 @@ def find_email_via_web_search(
 ) -> dict:
     """
     1. Check the care_home_emails cache (instant, free, trusted).
-    2. If miss, ask gpt-4o-mini-search-preview to search the web.
+    2. If miss, ask Google-Search-grounded Gemini to search the web.
     3. Pull the email from its response with regex; cache it.
 
     Returns: {found: bool, email?: str, source: str, verified: bool, confidence: str}
 
-    Lookup order: cache → scrape care home website → OpenAI web search.
+    Lookup order: cache → scrape care home website → Gemini web search.
     """
     cached = _check_email_cache(care_home_name, postcode=town_or_postcode)
     if cached:
@@ -1176,8 +1244,8 @@ def find_email_via_web_search(
                 "is_generic_inbox": is_generic,
             }
 
-    if not openai_client:
-        return {"found": False, "reason": "OpenAI not configured"}
+    if not gemini_client:
+        return {"found": False, "reason": "Gemini not configured"}
 
     locator = town_or_postcode or "UK"
     manager_hint = f" The registered manager is {manager_name}." if manager_name else ""
@@ -1191,13 +1259,7 @@ def find_email_via_web_search(
     )
 
     try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini-search-preview",
-            messages=[{"role": "user", "content": query}],
-            web_search_options={},
-            user="yopey-email-lookup",  # not tied to a specific user
-        )
-        text = (response.choices[0].message.content or "").strip()
+        text = _grounded_search(query)
     except Exception as e:
         return {"found": False, "reason": f"Web search error: {e}"}
 
@@ -1232,213 +1294,195 @@ def find_email_via_web_search(
 # PART 2: TOOL DEFINITIONS
 # ============================================================
 
-TOOLS = [
+TOOL_DECLARATIONS: list[dict] = [
     {
-        "type": "function",
-        "function": {
-            "name": "search_care_homes",
-            "description": (
-                "Search for care homes near a UK postcode. Default radius is 1 mile "
-                "(per YOPEY: 'within a mile of where they study or live'). If no homes "
-                "are found at 1 mile, the search auto-expands to 2, 3, 5, then 10 miles "
-                "and returns results from whichever step found them — check the "
-                "`actual_radius_miles` field in the result and tell the teen if it had "
-                "to expand. Returns the closest care homes with name, address, phone, "
-                "manager name, CQC rating, email, and distance."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "postcode": {"type": "string", "description": "A valid UK postcode, e.g. 'CB8 8YN'"},
-                    "radius_miles": {
-                        "type": "integer",
-                        "description": "Starting search radius in miles. Default 1 (will auto-expand if no results).",
-                        "default": 1,
-                    },
-                    "max_results": {"type": "integer", "description": "Max care homes. Default 5.", "default": 5},
+        "name": "search_care_homes",
+        "description": (
+            "Search for care homes near a UK postcode. Default radius is 1 mile "
+            "(per YOPEY: 'within a mile of where they study or live'). If no homes "
+            "are found at 1 mile, the search auto-expands to 2, 3, 5, then 10 miles "
+            "and returns results from whichever step found them — check the "
+            "`actual_radius_miles` field in the result and tell the teen if it had "
+            "to expand. Returns the closest care homes with name, address, phone, "
+            "manager name, CQC rating, email, and distance."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "postcode": {"type": "string", "description": "A valid UK postcode, e.g. 'CB8 8YN'"},
+                "radius_miles": {
+                    "type": "integer",
+                    "description": "Starting search radius in miles. Default 1 (will auto-expand if no results).",
                 },
-                "required": ["postcode"],
+                "max_results": {"type": "integer", "description": "Max care homes. Default 5."},
+            },
+            "required": ["postcode"],
+        },
+    },
+    {
+        "name": "save_user_details",
+        "description": (
+            "Save user details collected during chat (surname, email, postcode, school, stage). "
+            "Call this whenever you've just learnt a new piece of information about the user."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "surname": {"type": "string"},
+                "email": {"type": "string", "description": "A valid email"},
+                "postcode": {"type": "string"},
+                "school": {"type": "string"},
+                "stage": {"type": "string", "enum": ["sixth_form", "undergraduate"]},
             },
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "save_user_details",
-            "description": (
-                "Save user details collected during chat (surname, email, postcode, school, stage). "
-                "Call this whenever you've just learnt a new piece of information about the user."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "surname": {"type": "string"},
-                    "email": {"type": "string", "description": "A valid email"},
-                    "postcode": {"type": "string"},
-                    "school": {"type": "string"},
-                    "stage": {"type": "string", "enum": ["sixth_form", "undergraduate"]},
+        "name": "find_care_home_email",
+        "description": (
+            "Look up a care home's contact email. First checks our cached database "
+            "(Tony's confirmed contacts + previously found emails), then falls back "
+            "to a web search. Use BEFORE drafting an email — never invent an address. "
+            "Returns either a real email with confidence level, or {found: false} so "
+            "you can tell the user to call/use carehome.co.uk instead."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "care_home_name": {
+                    "type": "string",
+                    "description": "Exact care home name from search_care_homes",
+                },
+                "town_or_postcode": {
+                    "type": "string",
+                    "description": "Town or postcode to disambiguate (helps with common names)",
+                },
+                "manager_name": {
+                    "type": "string",
+                    "description": "Registered manager name if known (helps target the right inbox)",
                 },
             },
+            "required": ["care_home_name"],
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "find_care_home_email",
-            "description": (
-                "Look up a care home's contact email. First checks our cached database "
-                "(Tony's confirmed contacts + previously found emails), then falls back "
-                "to a web search. Use BEFORE drafting an email — never invent an address. "
-                "Returns either a real email with confidence level, or {found: false} so "
-                "you can tell the user to call/use carehome.co.uk instead."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "care_home_name": {
-                        "type": "string",
-                        "description": "Exact care home name from search_care_homes",
-                    },
-                    "town_or_postcode": {
-                        "type": "string",
-                        "description": "Town or postcode to disambiguate (helps with common names)",
-                    },
-                    "manager_name": {
-                        "type": "string",
-                        "description": "Registered manager name if known (helps target the right inbox)",
-                    },
-                },
-                "required": ["care_home_name"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "find_dementia_training",
-            "description": (
-                "Search the web for fresh free dementia training resources (videos, "
-                "online courses, apps, podcasts). Use when the teen asks for more "
-                "training beyond the curated 5 listed in your prompt, asks 'what's new?', "
-                "or finishes the curated ones. Returns a list of {name, url, description, "
-                "estimated_minutes, is_free}. Always check is_free=true before recommending."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "focus": {
-                        "type": "string",
-                        "description": "Optional kind of resource, e.g. 'short videos', 'in-person course', 'app', 'podcast'",
-                    },
+        "name": "find_dementia_training",
+        "description": (
+            "Search the web for fresh free dementia training resources (videos, "
+            "online courses, apps, podcasts). Use when the teen asks for more "
+            "training beyond the curated 5 listed in your prompt, asks 'what's new?', "
+            "or finishes the curated ones. Returns a list of {name, url, description, "
+            "estimated_minutes, is_free}. Always check is_free=true before recommending."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "focus": {
+                    "type": "string",
+                    "description": "Optional kind of resource, e.g. 'short videos', 'in-person course', 'app', 'podcast'",
                 },
             },
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "mark_care_home_replied",
-            "description": (
-                "Record that a care home has replied to the young person, with the "
-                "outcome. Call this whenever they tell you they've heard back — e.g. "
-                "'they emailed me back saying yes', 'they called and said no', 'they "
-                "said come in next Tuesday'. If accepted, this triggers the welcome "
-                "email series automatically."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "care_home_name": {
-                        "type": "string",
-                        "description": "Care home name (must match an existing contact)",
-                    },
-                    "outcome": {
-                        "type": "string",
-                        "enum": ["accepted", "rejected"],
-                        "description": "'accepted' if they said yes / inviting visit. 'rejected' if no / not taking volunteers.",
-                    },
+        "name": "mark_care_home_replied",
+        "description": (
+            "Record that a care home has replied to the young person, with the "
+            "outcome. Call this whenever they tell you they've heard back — e.g. "
+            "'they emailed me back saying yes', 'they called and said no', 'they "
+            "said come in next Tuesday'. If accepted, this triggers the welcome "
+            "email series automatically."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "care_home_name": {
+                    "type": "string",
+                    "description": "Care home name (must match an existing contact)",
                 },
-                "required": ["care_home_name", "outcome"],
+                "outcome": {
+                    "type": "string",
+                    "enum": ["accepted", "rejected"],
+                    "description": "'accepted' if they said yes / inviting visit. 'rejected' if no / not taking volunteers.",
+                },
             },
+            "required": ["care_home_name", "outcome"],
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "raise_safeguarding_concern",
-            "description": (
-                "Call this IMMEDIATELY and SILENTLY in either situation:\n"
-                "(1) THE YOUNG PERSON may be at risk — self-harm or suicidal "
-                "thoughts, being abused or unsafe, an eating disorder, substance "
-                "abuse, severe distress or hopelessness, being a victim of crime, "
-                "or anyone in danger.\n"
-                "(2) THE YOUNG PERSON REPORTS A CONCERN ABOUT A CARE HOME — e.g. a "
-                "resident being mistreated, neglected, spoken to harshly, left "
-                "unsafe, or anything at the home that worried them "
-                "(category 'care_home_concern').\n"
-                "This alerts a human safeguarding lead at YOPEY. Call it BEFORE "
-                "you reply. Do not mention the tool or the alert to the young "
-                "person. When unsure, err on the side of raising it."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "category": {
-                        "type": "string",
-                        "enum": [
-                            "self_harm",
-                            "abuse",
-                            "danger",
-                            "distress",
-                            "care_home_concern",
-                            "other",
-                        ],
-                        "description": (
-                            "Best-fit category. Use 'care_home_concern' when the "
-                            "young person is reporting something wrong at a care "
-                            "home (about a resident or the home), NOT their own "
-                            "welfare."
-                        ),
-                    },
-                    "summary": {
-                        "type": "string",
-                        "description": (
-                            "A brief, factual, NON-graphic summary (1-2 sentences) of "
-                            "what the young person disclosed or reported, so the "
-                            "safeguarding lead knows what to look into. Do not editorialise."
-                        ),
-                    },
+        "name": "raise_safeguarding_concern",
+        "description": (
+            "Call this IMMEDIATELY and SILENTLY in either situation:\n"
+            "(1) THE YOUNG PERSON may be at risk — self-harm or suicidal "
+            "thoughts, being abused or unsafe, an eating disorder, substance "
+            "abuse, severe distress or hopelessness, being a victim of crime, "
+            "or anyone in danger.\n"
+            "(2) THE YOUNG PERSON REPORTS A CONCERN ABOUT A CARE HOME — e.g. a "
+            "resident being mistreated, neglected, spoken to harshly, left "
+            "unsafe, or anything at the home that worried them "
+            "(category 'care_home_concern').\n"
+            "This alerts a human safeguarding lead at YOPEY. Call it BEFORE "
+            "you reply. Do not mention the tool or the alert to the young "
+            "person. When unsure, err on the side of raising it."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": [
+                        "self_harm",
+                        "abuse",
+                        "danger",
+                        "distress",
+                        "care_home_concern",
+                        "other",
+                    ],
+                    "description": (
+                        "Best-fit category. Use 'care_home_concern' when the "
+                        "young person is reporting something wrong at a care "
+                        "home (about a resident or the home), NOT their own "
+                        "welfare."
+                    ),
                 },
-                "required": ["category", "summary"],
+                "summary": {
+                    "type": "string",
+                    "description": (
+                        "A brief, factual, NON-graphic summary (1-2 sentences) of "
+                        "what the young person disclosed or reported, so the "
+                        "safeguarding lead knows what to look into. Do not editorialise."
+                    ),
+                },
             },
+            "required": ["category", "summary"],
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "log_care_home_contact",
-            "description": (
-                "Log that the young person has contacted a care home. "
-                "Call when they confirm they've sent an email, made a call, or delivered a letter. "
-                "This starts the reminder countdown."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "care_home_name": {"type": "string", "description": "Name of the care home contacted"},
-                    "care_home_phone": {"type": "string", "description": "Phone number of the care home"},
-                    "care_home_address": {"type": "string", "description": "Address of the care home"},
-                    "method": {
-                        "type": "string",
-                        "enum": ["email", "phone", "in_person"],
-                        "description": "How they contacted them",
-                    },
+        "name": "log_care_home_contact",
+        "description": (
+            "Log that the young person has contacted a care home. "
+            "Call when they confirm they've sent an email, made a call, or delivered a letter. "
+            "This starts the reminder countdown."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "care_home_name": {"type": "string", "description": "Name of the care home contacted"},
+                "care_home_phone": {"type": "string", "description": "Phone number of the care home"},
+                "care_home_address": {"type": "string", "description": "Address of the care home"},
+                "method": {
+                    "type": "string",
+                    "enum": ["email", "phone", "in_person"],
+                    "description": "How they contacted them",
                 },
-                "required": ["care_home_name", "method"],
             },
+            "required": ["care_home_name", "method"],
         },
     },
 ]
+
+# The chat brain's toolset, built once at import. Kept separate from
+# GOOGLE_SEARCH_TOOL — Gemini rejects grounding + custom declarations together.
+GEMINI_TOOLS = [genai_types.Tool(function_declarations=TOOL_DECLARATIONS)]
 
 
 # ============================================================
@@ -1513,23 +1557,6 @@ def verify_user_token(user_id: str, token: str) -> bool:
         return False
     expected = make_user_token(user_id)
     return hmac.compare_digest(expected, token)
-
-
-def openai_user_hash(user_id: Optional[str]) -> str:
-    """
-    Per-user identifier passed to OpenAI as the `user` parameter so they can
-    flag abusive patterns at the account level. Hashed so OpenAI never sees
-    the actual user_id (which is a session token in our system).
-
-    Per OpenAI docs: passing this does NOT cause your data to be retained
-    differently — API data is still excluded from training by default since
-    March 2023 (see https://help.openai.com/en/articles/5722486).
-    """
-    if not user_id:
-        return "anonymous"
-    return "yopey-" + hashlib.sha256(
-        (user_id + ":" + EMAIL_TOKEN_SECRET).encode()
-    ).hexdigest()[:16]
 
 
 def create_user(
@@ -1778,13 +1805,36 @@ def render_nudge_email(stage_def: dict, user: dict, contact: dict) -> tuple[str,
 # training_resources. Tony reviews + seeds the keepers manually for now;
 # v1.1 will run this on a cron and present new finds to Tony for approval.
 
+TRAINING_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "resources": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "url": {"type": "string"},
+                    "description": {"type": "string"},
+                    "estimated_minutes": {"type": "integer"},
+                    "is_free": {"type": "boolean"},
+                    "provider": {"type": "string"},
+                },
+                "required": ["name", "url", "is_free"],
+            },
+        },
+    },
+    "required": ["resources"],
+}
+
+
 def find_dementia_training_resources(focus: Optional[str] = None) -> dict:
     """
-    Use gpt-4o-mini-search-preview to find currently-free dementia training
+    Use Google-Search-grounded Gemini to find currently-free dementia training
     resources online. Returns structured JSON the bot can render directly.
     """
-    if not openai_client:
-        return {"error": "OpenAI not configured", "results": []}
+    if not gemini_client:
+        return {"error": "Gemini not configured", "results": []}
 
     focus_hint = f" Focus: {focus}." if focus else ""
     prompt = (
@@ -1811,17 +1861,11 @@ def find_dementia_training_resources(focus: Optional[str] = None) -> dict:
     )
 
     try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini-search-preview",
-            messages=[{"role": "user", "content": prompt}],
-            web_search_options={},
-            user="yopey-training-search",
-        )
-        text = (response.choices[0].message.content or "").strip()
+        text = _grounded_search(prompt, response_schema=TRAINING_SCHEMA)
     except Exception as e:
         return {"error": f"Web search error: {e}", "results": []}
 
-    data = _extract_json_object(text)
+    data = _parse_json_response(text)
     if data is None:
         return {"error": "Search returned no parseable JSON", "results": []}
     resources = data.get("resources") or []
@@ -2547,6 +2591,113 @@ def _trim_history(history: list, max_messages: int = MAX_LLM_HISTORY) -> list:
     return trimmed
 
 
+def _tool_result_to_response_dict(result_str: str) -> dict:
+    """Gemini function_response payloads must be JSON objects, but execute_tool
+    returns JSON strings (occasionally bare arrays/strings)."""
+    try:
+        parsed = json.loads(result_str)
+    except (json.JSONDecodeError, TypeError):
+        return {"result": result_str}
+    return parsed if isinstance(parsed, dict) else {"result": parsed}
+
+
+# Documented Gemini escape hatch: function_call parts replayed from stored
+# history need *a* thought signature; this placeholder marks them as
+# reconstructed rather than produced in the live turn.
+_PAST_TURN_THOUGHT_SIGNATURE = b"context_engineering_is_the_way_to_go"
+
+
+def _history_to_gemini_contents(history: list) -> list:
+    """
+    Convert stored OpenAI-shaped history (role/content/tool_calls/tool) into
+    Gemini contents. The stored shape predates this migration and the dashboard
+    transcript viewer reads it, so it stays canonical in Supabase — we convert
+    on every call instead of migrating the data.
+    """
+    contents: list = []
+    id_to_name: dict[str, str] = {}
+    pending_tool_parts: list = []
+
+    def flush_tool_parts() -> None:
+        # All function responses for one model turn travel in a single
+        # user-role content (Gemini's parallel-call convention).
+        if pending_tool_parts:
+            contents.append(genai_types.Content(role="user", parts=pending_tool_parts[:]))
+            pending_tool_parts.clear()
+
+    for msg in history:
+        role = msg.get("role")
+        if role == "user":
+            flush_tool_parts()
+            if msg.get("content"):
+                contents.append(
+                    genai_types.Content(role="user", parts=[genai_types.Part(text=msg["content"])])
+                )
+        elif role == "assistant":
+            flush_tool_parts()
+            parts: list = []
+            if msg.get("content"):
+                parts.append(genai_types.Part(text=msg["content"]))
+            for tc in msg.get("tool_calls") or []:
+                name = tc["function"]["name"]
+                id_to_name[tc["id"]] = name
+                try:
+                    args = json.loads(tc["function"].get("arguments") or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                parts.append(
+                    genai_types.Part(
+                        function_call=genai_types.FunctionCall(name=name, args=args),
+                        thought_signature=_PAST_TURN_THOUGHT_SIGNATURE,
+                    )
+                )
+            if parts:
+                contents.append(genai_types.Content(role="model", parts=parts))
+        elif role == "tool":
+            name = id_to_name.get(msg.get("tool_call_id") or "")
+            if not name:
+                continue  # orphaned result (pair split before trimming guard existed)
+            pending_tool_parts.append(
+                genai_types.Part.from_function_response(
+                    name=name, response=_tool_result_to_response_dict(msg.get("content") or "")
+                )
+            )
+    flush_tool_parts()
+    return contents
+
+
+def _visible_text(response) -> str:
+    """Joined non-thought text parts, '' when blocked or function-call-only
+    (response.text logs a warning on mixed parts)."""
+    candidates = getattr(response, "candidates", None) or []
+    if not candidates or not candidates[0].content:
+        return ""
+    parts = candidates[0].content.parts or []
+    return "".join(p.text for p in parts if p.text and not p.thought).strip()
+
+
+# Teens disclose self-harm/abuse here BY DESIGN — the brain must respond
+# supportively and fire raise_safeguarding_concern, not have its reply
+# filtered at exactly that moment. BLOCK_ONLY_HIGH keeps a guardrail on
+# output without silencing those turns.
+BRAIN_SAFETY_SETTINGS = [
+    genai_types.SafetySetting(category=category, threshold="BLOCK_ONLY_HIGH")
+    for category in (
+        "HARM_CATEGORY_HARASSMENT",
+        "HARM_CATEGORY_HATE_SPEECH",
+        "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "HARM_CATEGORY_DANGEROUS_CONTENT",
+    )
+]
+
+# Shown when Gemini returns no usable text (safety block / truncation) — never
+# leave a young person staring at an empty bubble.
+FALLBACK_REPLY = (
+    "Sorry — I couldn't write a reply just then. Could you say that again "
+    "another way? If you need a real person, contact " + YOPEY_SAFEGUARDING_CONTACT
+)
+
+
 def _build_contacts_context(user_id: str) -> str:
     """Render this user's care home contacts as a short prompt block for the bot."""
     if not supabase:
@@ -2622,53 +2773,80 @@ def chat(user_message: str, user_id: str) -> str:
         + _build_contacts_context(user_id)
     )
 
-    response = openai_client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "system", "content": sys_prompt}, *_trim_history(history)],
-        tools=TOOLS,
-        tool_choice="auto",
-        temperature=0.7,
-        user=openai_user_hash(user_id),
-        max_tokens=800,
+    def _brain_config(allow_tools: bool) -> genai_types.GenerateContentConfig:
+        return genai_types.GenerateContentConfig(
+            system_instruction=sys_prompt,
+            tools=GEMINI_TOOLS,
+            # mode=NONE on the follow-up mirrors the old no-tools second call
+            # while keeping declarations consistent with the function_call
+            # parts already in context.
+            tool_config=genai_types.ToolConfig(
+                function_calling_config=genai_types.FunctionCallingConfig(
+                    mode="AUTO" if allow_tools else "NONE"
+                )
+            ),
+            # Thinking tokens count toward max_output_tokens — a tight cap
+            # truncates mid-thought into an empty visible reply.
+            max_output_tokens=2048,
+            thinking_config=genai_types.ThinkingConfig(thinking_level="LOW"),
+            safety_settings=BRAIN_SAFETY_SETTINGS,
+            # temperature deliberately unset: Gemini 3 guidance is to keep the
+            # default 1.0 — lowering it degrades reasoning.
+        )
+
+    contents = _history_to_gemini_contents(_trim_history(history))
+
+    response = gemini_client.models.generate_content(
+        model=BRAIN_MODEL, contents=contents, config=_brain_config(allow_tools=True)
     )
 
-    message = response.choices[0].message
+    function_calls = response.function_calls or []
+    if function_calls:
+        # Reused verbatim in the follow-up — carries the thought signatures
+        # Gemini 3 validates on the live turn.
+        model_content = response.candidates[0].content
 
-    if message.tool_calls:
+        # Gemini doesn't return call ids; synthesize them so the stored
+        # history keeps the OpenAI shape the dashboard and converter expect.
+        call_ids = [fc.id or f"call_{os.urandom(12).hex()}" for fc in function_calls]
         history.append({
             "role": "assistant",
-            "content": message.content,
+            "content": _visible_text(response) or None,
             "tool_calls": [
                 {
-                    "id": tc.id,
+                    "id": call_id,
                     "type": "function",
-                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                    "function": {"name": fc.name, "arguments": json.dumps(dict(fc.args or {}))},
                 }
-                for tc in message.tool_calls
+                for call_id, fc in zip(call_ids, function_calls)
             ],
         })
 
-        for tool_call in message.tool_calls:
-            args = json.loads(tool_call.function.arguments)
+        response_parts = []
+        for call_id, fc in zip(call_ids, function_calls):
             result = execute_tool(
-                tool_call.function.name, args, user_id, trigger_message=user_message
+                fc.name, dict(fc.args or {}), user_id, trigger_message=user_message
             )
             history.append({
                 "role": "tool",
-                "tool_call_id": tool_call.id,
+                "tool_call_id": call_id,
                 "content": result,
             })
+            response_parts.append(
+                genai_types.Part.from_function_response(
+                    name=fc.name, response=_tool_result_to_response_dict(result)
+                )
+            )
 
-        follow_up = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "system", "content": sys_prompt}, *_trim_history(history)],
-            temperature=0.7,
-            max_tokens=800,
-            user=openai_user_hash(user_id),
+        follow_up = gemini_client.models.generate_content(
+            model=BRAIN_MODEL,
+            contents=contents
+            + [model_content, genai_types.Content(role="user", parts=response_parts)],
+            config=_brain_config(allow_tools=False),
         )
-        assistant_reply = follow_up.choices[0].message.content or ""
+        assistant_reply = _visible_text(follow_up) or FALLBACK_REPLY
     else:
-        assistant_reply = message.content or ""
+        assistant_reply = _visible_text(response) or FALLBACK_REPLY
 
     history.append({"role": "assistant", "content": assistant_reply})
     save_conversation(user_id, history)

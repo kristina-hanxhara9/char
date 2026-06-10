@@ -12,33 +12,52 @@ describes how the software supports those.
 
 ---
 
-## 1. Human escalation on disclosure
+## 1. Human escalation on disclosure — two paths
 
-If a young person discloses anything suggesting they may be at risk — self-harm
-or suicidal thoughts, abuse, being unsafe, an eating disorder, substance abuse,
-severe distress, being a victim of crime, or anyone in danger — the chatbot:
+The bot recognises **two kinds** of concern and, in both, (a) silently raises an
+alert to a human, (b) signposts the young person to a **real person at YOPEY**
+first, then the appropriate external services. It never tries to counsel,
+investigate, probe for detail, or advise — it defers to humans.
 
-1. **Silently calls `raise_safeguarding_concern`** (an LLM tool). The young
-   person is not told an alert was raised — it happens in the background so as
-   not to discourage them from talking.
-2. The backend **records a `safeguarding_alerts` row** and **emails the named
-   safeguarding lead immediately** (`SAFEGUARDING_EMAIL`) via Resend.
-3. The chatbot **then signposts** the young person to free confidential help:
-   - The Mix (under-25s): 0808 808 4994 · themix.org.uk
-   - Samaritans (24/7): 116 123
-   - Childline (under-19s): 0800 1111
-   - 999 if anyone is in immediate danger
-4. The bot does **not** try to counsel, probe for details, or advise — it
-   defers to humans and helplines.
+In both paths the bot **silently calls `raise_safeguarding_concern`** (an LLM
+tool — the young person is not told). The backend **records a
+`safeguarding_alerts` row** and **emails the safeguarding lead immediately**
+(`SAFEGUARDING_EMAIL`) via Resend.
 
-**Severity tiers:** self-harm / abuse / danger are recorded as `high`;
-distress / other as `medium`. The email subject carries the tier so the lead
-can triage.
+### Path 1 — the young person's own welfare
+Triggers: self-harm/suicidal thoughts, abuse, being unsafe, eating disorder,
+substance abuse, severe distress/hopelessness, victim of crime, anyone in danger.
 
-**Configuration required:** set `SAFEGUARDING_EMAIL` to the DSL's address and
-`RESEND_API_KEY` so the email can send. If email isn't configured the alert is
-still recorded on the dashboard and flagged as "email not sent" so it isn't
-missed.
+The bot points them to **YOPEY's safeguarding lead** (`YOPEY_SAFEGUARDING_CONTACT`),
+then the helplines:
+- The Mix (under-25s): 0808 808 4994 · themix.org.uk
+- Samaritans (24/7): 116 123
+- Childline (under-19s): 0800 1111
+- 999 if anyone is in immediate danger
+
+### Path 2 — a concern about a care home (adult safeguarding)
+Triggers: the young person reports that a **resident** is being mistreated,
+neglected, spoken to harshly, left unsafe, or anything at the home that worried
+them. This protects a vulnerable elderly adult and is a distinct, serious path.
+
+The bot reassures them they did the right thing by speaking up, then points to:
+- **YOPEY's safeguarding lead** (`YOPEY_SAFEGUARDING_CONTACT`)
+- The **Care Quality Commission** (the regulator):
+  cqc.org.uk/give-feedback-on-care · 03000 616161
+- 999 if a resident is in immediate danger
+
+The escalation email to the DSL for a care-home concern includes the CQC and
+local-authority adult-safeguarding routes, since the human follow-up differs
+from a young-person-welfare case.
+
+**Severity tiers:** self_harm / abuse / danger / care_home_concern are `high`;
+distress / other are `medium`. The email subject carries the tier for triage.
+
+**Configuration required:**
+- `SAFEGUARDING_EMAIL` — internal escalation inbox (the DSL). NOT shown to teens.
+- `YOPEY_SAFEGUARDING_CONTACT` — the teen-facing "talk to a real person" string.
+- `RESEND_API_KEY` — so the alert email can send. If email isn't configured the
+  alert is still recorded on the dashboard and flagged "email not sent".
 
 ---
 

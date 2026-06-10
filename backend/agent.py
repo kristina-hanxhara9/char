@@ -63,6 +63,13 @@ EMAIL_TOKEN_SECRET = os.environ.get("EMAIL_TOKEN_SECRET") or DASHBOARD_PASSWORD
 # safeguarding lead. Falls back to EMAIL_FROM's inbox if unset (better than
 # dropping the alert, but the lead should be set explicitly).
 SAFEGUARDING_EMAIL = os.environ.get("SAFEGUARDING_EMAIL", "").strip()
+# Teen-FACING safeguarding contact — a real person at YOPEY the bot points the
+# young person to (distinct from SAFEGUARDING_EMAIL, which is the internal
+# escalation inbox and is NOT shown to teens). Set to the named DSL.
+YOPEY_SAFEGUARDING_CONTACT = os.environ.get(
+    "YOPEY_SAFEGUARDING_CONTACT",
+    "YOPEY — email hello@yopey.org or call 01440 821654 and ask for the safeguarding lead",
+).strip()
 APP_BASE_URL = os.environ.get("APP_BASE_URL", "http://localhost:8000").rstrip("/")
 ALLOWED_ORIGINS = [
     o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
@@ -1356,30 +1363,45 @@ TOOLS = [
         "function": {
             "name": "raise_safeguarding_concern",
             "description": (
-                "Call this IMMEDIATELY and SILENTLY whenever the young person "
-                "discloses anything that suggests they may be at risk: self-harm "
-                "or suicidal thoughts, being abused or unsafe, an eating disorder, "
-                "substance abuse, severe distress or hopelessness, being a victim "
-                "of crime, or anyone being in danger. This alerts a human "
-                "safeguarding lead at YOPEY. Call it BEFORE you reply. Do not "
-                "mention the tool or the alert to the young person — just respond "
-                "with the caring helpline signposting afterwards. When unsure, "
-                "err on the side of raising it."
+                "Call this IMMEDIATELY and SILENTLY in either situation:\n"
+                "(1) THE YOUNG PERSON may be at risk — self-harm or suicidal "
+                "thoughts, being abused or unsafe, an eating disorder, substance "
+                "abuse, severe distress or hopelessness, being a victim of crime, "
+                "or anyone in danger.\n"
+                "(2) THE YOUNG PERSON REPORTS A CONCERN ABOUT A CARE HOME — e.g. a "
+                "resident being mistreated, neglected, spoken to harshly, left "
+                "unsafe, or anything at the home that worried them "
+                "(category 'care_home_concern').\n"
+                "This alerts a human safeguarding lead at YOPEY. Call it BEFORE "
+                "you reply. Do not mention the tool or the alert to the young "
+                "person. When unsure, err on the side of raising it."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "category": {
                         "type": "string",
-                        "enum": ["self_harm", "abuse", "danger", "distress", "other"],
-                        "description": "Best-fit category for the concern.",
+                        "enum": [
+                            "self_harm",
+                            "abuse",
+                            "danger",
+                            "distress",
+                            "care_home_concern",
+                            "other",
+                        ],
+                        "description": (
+                            "Best-fit category. Use 'care_home_concern' when the "
+                            "young person is reporting something wrong at a care "
+                            "home (about a resident or the home), NOT their own "
+                            "welfare."
+                        ),
                     },
                     "summary": {
                         "type": "string",
                         "description": (
                             "A brief, factual, NON-graphic summary (1-2 sentences) of "
-                            "what the young person disclosed, so the safeguarding lead "
-                            "knows what to look into. Do not editorialise."
+                            "what the young person disclosed or reported, so the "
+                            "safeguarding lead knows what to look into. Do not editorialise."
                         ),
                     },
                 },
@@ -2267,7 +2289,18 @@ def send_email(to_email: str, subject: str, body: str, html: Optional[str] = Non
 # likely to be used by under-18s.
 # ============================================================
 
-SAFEGUARDING_CATEGORIES = {"self_harm", "abuse", "danger", "distress", "other"}
+# Teen-welfare categories + the adult-safeguarding 'care_home_concern' (a teen
+# reporting that something is wrong at a care home — resident mistreatment,
+# neglect, unsafe conditions). All except 'distress'/'other' are high severity.
+SAFEGUARDING_CATEGORIES = {
+    "self_harm",
+    "abuse",
+    "danger",
+    "distress",
+    "care_home_concern",
+    "other",
+}
+HIGH_SEVERITY_CATEGORIES = {"self_harm", "abuse", "danger", "care_home_concern"}
 
 
 def raise_safeguarding_alert(
@@ -2281,7 +2314,8 @@ def raise_safeguarding_alert(
         return {"recorded": False, "reason": "db unavailable"}
 
     category = category if category in SAFEGUARDING_CATEGORIES else "other"
-    severity = "high" if category in {"self_harm", "abuse", "danger"} else "medium"
+    severity = "high" if category in HIGH_SEVERITY_CATEGORIES else "medium"
+    is_care_home = category == "care_home_concern"
 
     user = get_user(user_id) or {}
     alert_row = {
@@ -2303,7 +2337,24 @@ def raise_safeguarding_alert(
     emailed = False
     if lead:
         name = (user.get("first_name") or "") + " " + (user.get("surname") or "")
-        subject = f"[YOPEY SAFEGUARDING — {severity.upper()}] {category.replace('_', ' ')}"
+        kind = "CARE-HOME CONCERN" if is_care_home else "YOPEY SAFEGUARDING"
+        subject = f"[{kind} — {severity.upper()}] {category.replace('_', ' ')}"
+        if is_care_home:
+            footer = (
+                "This is a concern about a CARE HOME raised by a young person — "
+                "i.e. adult safeguarding of a resident, not the young person's own "
+                "welfare. Follow YOPEY's procedure: this likely needs reporting to "
+                "the CQC (cqc.org.uk/give-feedback-on-care or 03000 616161) and/or "
+                "the local council's adult safeguarding team. Call 999 if a resident "
+                "is in immediate danger. The young person was advised to report it "
+                "to YOPEY and was given the CQC route."
+            )
+        else:
+            footer = (
+                "This is about the young person's own welfare. The young person was "
+                "shown a real YOPEY contact plus helplines (The Mix, Samaritans, "
+                "Childline, 999) in the chat."
+            )
         body = (
             "A YOPEY Befriender chatbot conversation has triggered a safeguarding "
             "alert. Please review and follow YOPEY's safeguarding procedure.\n\n"
@@ -2315,8 +2366,7 @@ def raise_safeguarding_alert(
             f"What the bot summarised:\n{summary}\n\n"
             "Open the dashboard → Safeguarding tab to read the full conversation "
             "and mark this as actioned.\n\n"
-            "This is an automated alert. The young person was also shown helpline "
-            "details (The Mix, Samaritans, Childline, 999) in the chat."
+            f"{footer}"
         )
         emailed = send_email(lead, subject, body)
         if emailed and alert_id:
@@ -2553,10 +2603,13 @@ def chat(user_message: str, user_id: str) -> str:
     history = load_conversation(user_id)
     history.append({"role": "user", "content": user_message})
 
-    # Bot-personalised system prompt: inject user's known details + contacts
+    # Bot-personalised system prompt: inject user's known details + contacts +
+    # the teen-facing YOPEY safeguarding contact (used in the safeguarding flows).
     sys_prompt = (
         SYSTEM_PROMPT
-        + f"\n\n== KNOWN USER DETAILS ==\n"
+        + f"\n\n== YOPEY SAFEGUARDING CONTACT (a real person — use this when "
+        + f"signposting) ==\n{YOPEY_SAFEGUARDING_CONTACT}\n"
+        + f"\n== KNOWN USER DETAILS ==\n"
         + f"First name: {user.get('first_name')}\n"
         + f"Age: {user.get('age')}\n"
         + (f"Surname: {user.get('surname')}\n" if user.get("surname") else "")

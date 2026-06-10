@@ -1,4 +1,5 @@
 import Link from "next/link";
+import ReturningUserCta from "@/components/ReturningUserCta";
 
 export default function LandingPage() {
   return (
@@ -40,26 +41,7 @@ export default function LandingPage() {
               supports you every step of the way.
             </p>
 
-            <div className="mt-8 flex flex-col sm:flex-row gap-3">
-              <Link
-                href="/onboard"
-                className="inline-flex items-center justify-center px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-lg shadow-yopey-primary/30 hover:opacity-90 transition active:scale-[0.98] min-h-[52px]"
-              >
-                Find a care home →
-              </Link>
-              <a
-                href="https://www.yopeybefriender.org"
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center justify-center px-6 py-4 rounded-2xl border-2 border-gray-200 text-gray-700 font-semibold hover:border-yopey-primary hover:text-yopey-primary transition min-h-[52px]"
-              >
-                Learn about YOPEY
-              </a>
-            </div>
-
-            <p className="mt-6 text-sm text-gray-500">
-              Free · UK only · Takes about 5 minutes to get started
-            </p>
+            <ReturningUserCta />
           </div>
 
           <div className="md:block">

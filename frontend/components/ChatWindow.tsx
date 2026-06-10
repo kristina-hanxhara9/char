@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import MessageBubble from "@/components/MessageBubble";
 import TypingIndicator from "@/components/TypingIndicator";
@@ -31,10 +31,22 @@ function markAutoSearched(userId: string): void {
   }
 }
 
+function clearAutoSearched(userId: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.removeItem(`yopey_autosearched_${userId}`);
+  } catch {
+    /* ignore */
+  }
+}
+
 type Msg = { role: "user" | "assistant"; content: string };
 
 export default function ChatWindow() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // intent set by returning-user buttons: 'search' | 'advice' | 'report'
+  const intent = searchParams.get("intent");
   const [user, setUser] = useState<StoredUser | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
@@ -82,6 +94,33 @@ export default function ChatWindow() {
       }
       setUser(u);
 
+      // ── Returning-user intents (set by the landing-page buttons) ──
+      // These open the chat for a specific purpose and DO NOT auto-search.
+      if (intent === "report") {
+        setMessages([
+          {
+            role: "assistant",
+            content: `Hi ${u.first_name}. Paste your visit-report draft below and I'll help you polish it. If you haven't written anything yet, just tell me what happened on the visit.`,
+          },
+        ]);
+        return;
+      }
+      if (intent === "advice") {
+        setMessages([
+          {
+            role: "assistant",
+            content: `Hi ${u.first_name}. What would you like advice on? For example: tips for your first visit, what to say to a resident, or trying another care home.`,
+          },
+        ]);
+        return;
+      }
+
+      // intent=search forces a fresh care-home search even if one already ran
+      // this session (returning user explicitly wants another home).
+      if (intent === "search" && u.postcode) {
+        clearAutoSearched(u.user_id);
+      }
+
       const shouldAutoSearch =
         Boolean(u.postcode) && !hasAlreadyAutoSearched(u.user_id);
 
@@ -126,7 +165,7 @@ export default function ChatWindow() {
         ]);
       }
     })();
-  }, [router]);
+  }, [router, intent]);
 
   // Auto-scroll to bottom whenever messages change
   useEffect(() => {

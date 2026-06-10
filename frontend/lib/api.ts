@@ -38,6 +38,43 @@ export type SurveyAnswers = {
   q10_difficult_behaviour: number;
 };
 
+export async function requestReturnLink(email: string): Promise<void> {
+  // Always resolves (the backend returns a generic response regardless of
+  // whether the email exists — no enumeration). Errors are surfaced only for
+  // network/validation failures.
+  const res = await fetch(`${API_URL}/api/request-return-link`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `Couldn't send the link (${res.status})`);
+  }
+}
+
+export type ReturnExchange = {
+  user_id: string;
+  user_token: string;
+  first_name: string;
+  postcode?: string | null;
+  is_student?: boolean | null;
+  search_preference?: "home" | "school" | null;
+};
+
+export async function exchangeReturnToken(token: string): Promise<ReturnExchange> {
+  const res = await fetch(`${API_URL}/api/return/exchange`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `This link didn't work (${res.status})`);
+  }
+  return res.json();
+}
+
 export function precomputeSearch(postcode: string): Promise<void> {
   // Fire-and-forget — the backend warms the care_home_searches cache so the
   // auto-search on /chat returns instantly. Failures are swallowed; the

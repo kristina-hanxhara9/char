@@ -71,6 +71,10 @@ YOPEY_SAFEGUARDING_CONTACT = os.environ.get(
     "YOPEY — email hello@yopey.org or call 01440 821654 and ask for the safeguarding lead",
 ).strip()
 APP_BASE_URL = os.environ.get("APP_BASE_URL", "http://localhost:8000").rstrip("/")
+# Public URL of the FRONTEND — used to build magic-link return URLs in emails.
+FRONTEND_BASE_URL = os.environ.get(
+    "FRONTEND_BASE_URL", "https://yopey-befriender.vercel.app"
+).rstrip("/")
 ALLOWED_ORIGINS = [
     o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
 ]
@@ -3093,6 +3097,100 @@ def precompute_search_endpoint(req: PrecomputeSearchRequest, request: Request):
         "found": len(result.get("results", [])),
         "source": result.get("source"),
     }
+
+
+class ReturnLinkRequest(BaseModel):
+    email: EmailStr
+
+
+class ReturnExchangeRequest(BaseModel):
+    token: str
+
+
+class ReturnExchangeResponse(BaseModel):
+    user_id: str
+    user_token: str
+    first_name: str
+    postcode: Optional[str] = None
+    is_student: Optional[bool] = None
+    search_preference: Optional[str] = None
+
+
+# Magic-link login token lifetime
+RETURN_TOKEN_TTL_MINUTES = 30
+
+
+@app.post("/api/request-return-link")
+@limiter.limit("5/minute")
+def request_return_link(req: ReturnLinkRequest, request: Request):
+    """
+    Email an already-onboarded user a one-click link back into their session.
+    Always returns the same generic response so an attacker can't use this to
+    learn which emails are registered (no enumeration).
+    """
+    _require_services()
+    email = str(req.email).strip().lower()
+    try:
+        found = supabase.table("users").select("id, first_name").eq("email", email).limit(1).execute()
+    except Exception:
+        found = None
+
+    if found and found.data:
+        user_id = found.data[0]["id"]
+        exp = (datetime.now(timezone.utc) + timedelta(minutes=RETURN_TOKEN_TTL_MINUTES)).isoformat()
+        token = make_token({"k": "login", "u": user_id, "exp": exp})
+        link = f"{FRONTEND_BASE_URL}/return?token={token}"
+        subject = "Your link back into YOPEY Befriender"
+        body = (
+            f"Hi {found.data[0].get('first_name') or 'there'},\n\n"
+            "Here's your secure link to pick up where you left off — find another "
+            "care home, ask for advice, or get help polishing a visit report:\n\n"
+            f"{link}\n\n"
+            f"This link works for {RETURN_TOKEN_TTL_MINUTES} minutes and only on "
+            "this account. If you didn't ask for it, you can ignore this email.\n\n"
+            "— YOPEY"
+        )
+        if send_email(email, subject, body):
+            print(f"[return] link emailed to {redact_email(email)}")
+        else:
+            # Resend not configured — log the link so dev/testing still works.
+            print(f"[return] (email not sent) link for {redact_email(email)}: {link}")
+
+    return {"sent": True}
+
+
+@app.post("/api/return/exchange", response_model=ReturnExchangeResponse)
+@limiter.limit("10/minute")
+def return_exchange(req: ReturnExchangeRequest, request: Request):
+    """Validate a magic-link token and hand back the session credentials."""
+    _require_services()
+    data = verify_token(req.token)
+    if not data or data.get("k") != "login":
+        raise HTTPException(status_code=400, detail="This link is invalid.")
+
+    # Expiry check
+    exp = data.get("exp")
+    try:
+        exp_dt = datetime.fromisoformat(exp.replace("Z", "+00:00")) if exp else None
+        if exp_dt and exp_dt.tzinfo is None:
+            exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        exp_dt = None
+    if not exp_dt or exp_dt < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="This link has expired. Please request a new one.")
+
+    user = get_user(data["u"])
+    if not user:
+        raise HTTPException(status_code=404, detail="Account not found.")
+
+    return ReturnExchangeResponse(
+        user_id=user["id"],
+        user_token=make_user_token(user["id"]),
+        first_name=user["first_name"],
+        postcode=user.get("postcode"),
+        is_student=user.get("is_student"),
+        search_preference=user.get("search_preference"),
+    )
 
 
 @app.post("/api/onboard", response_model=OnboardResponse)

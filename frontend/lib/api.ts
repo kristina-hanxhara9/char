@@ -203,6 +203,43 @@ export async function markReply(
   }
 }
 
+export async function fetchConversation(
+  user_id: string,
+  password: string
+): Promise<{ user_id: string; messages: { role: string; content: string }[] }> {
+  const res = await fetch(`${API_URL}/api/dashboard/conversation/${user_id}`, {
+    headers: { "X-Dashboard-Password": password },
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `Couldn't load conversation (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function resolveSafeguarding(
+  alert_id: string,
+  resolved_by: string,
+  password: string,
+  notes?: string
+): Promise<void> {
+  const res = await fetch(
+    `${API_URL}/api/dashboard/safeguarding/${alert_id}/resolve`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Dashboard-Password": password,
+      },
+      body: JSON.stringify({ resolved_by, notes }),
+    }
+  );
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `Couldn't resolve (${res.status})`);
+  }
+}
+
 export async function adminDeleteUser(user_id: string, password: string): Promise<void> {
   // Same endpoint, but admin auth via X-Dashboard-Password header instead
   // of the user's HMAC token (the dashboard doesn't know the user's token).

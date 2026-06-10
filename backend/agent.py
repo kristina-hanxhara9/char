@@ -59,6 +59,10 @@ CQC_PARTNER_CODE = os.environ.get("CQC_PARTNER_CODE", "").strip()
 CQC_SUBSCRIPTION_KEY = os.environ.get("CQC_SUBSCRIPTION_KEY", "").strip()
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "changeme")
 EMAIL_TOKEN_SECRET = os.environ.get("EMAIL_TOKEN_SECRET") or DASHBOARD_PASSWORD
+# Where safeguarding escalations are emailed. Should be YOPEY's named
+# safeguarding lead. Falls back to EMAIL_FROM's inbox if unset (better than
+# dropping the alert, but the lead should be set explicitly).
+SAFEGUARDING_EMAIL = os.environ.get("SAFEGUARDING_EMAIL", "").strip()
 APP_BASE_URL = os.environ.get("APP_BASE_URL", "http://localhost:8000").rstrip("/")
 ALLOWED_ORIGINS = [
     o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
@@ -1350,6 +1354,42 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "raise_safeguarding_concern",
+            "description": (
+                "Call this IMMEDIATELY and SILENTLY whenever the young person "
+                "discloses anything that suggests they may be at risk: self-harm "
+                "or suicidal thoughts, being abused or unsafe, an eating disorder, "
+                "substance abuse, severe distress or hopelessness, being a victim "
+                "of crime, or anyone being in danger. This alerts a human "
+                "safeguarding lead at YOPEY. Call it BEFORE you reply. Do not "
+                "mention the tool or the alert to the young person — just respond "
+                "with the caring helpline signposting afterwards. When unsure, "
+                "err on the side of raising it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "enum": ["self_harm", "abuse", "danger", "distress", "other"],
+                        "description": "Best-fit category for the concern.",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": (
+                            "A brief, factual, NON-graphic summary (1-2 sentences) of "
+                            "what the young person disclosed, so the safeguarding lead "
+                            "knows what to look into. Do not editorialise."
+                        ),
+                    },
+                },
+                "required": ["category", "summary"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "log_care_home_contact",
             "description": (
                 "Log that the young person has contacted a care home. "
@@ -2218,6 +2258,90 @@ def send_email(to_email: str, subject: str, body: str, html: Optional[str] = Non
         return False
 
 
+# ============================================================
+# SAFEGUARDING ESCALATION
+# When the bot detects a sensitive disclosure it calls raise_safeguarding_concern.
+# We record the alert AND email the named safeguarding lead immediately. The
+# teen still receives the helpline signposting (handled in the prompt). This is
+# the human-escalation layer the UK Children's Code expects for a service
+# likely to be used by under-18s.
+# ============================================================
+
+SAFEGUARDING_CATEGORIES = {"self_harm", "abuse", "danger", "distress", "other"}
+
+
+def raise_safeguarding_alert(
+    user_id: str,
+    category: str,
+    summary: str,
+    trigger_message: Optional[str] = None,
+) -> dict:
+    """Record a safeguarding alert and email the safeguarding lead immediately."""
+    if not supabase:
+        return {"recorded": False, "reason": "db unavailable"}
+
+    category = category if category in SAFEGUARDING_CATEGORIES else "other"
+    severity = "high" if category in {"self_harm", "abuse", "danger"} else "medium"
+
+    user = get_user(user_id) or {}
+    alert_row = {
+        "user_id": user_id,
+        "category": category,
+        "severity": severity,
+        "summary": (summary or "")[:1000],
+        "trigger_message": (trigger_message or "")[:2000],
+    }
+    try:
+        inserted = supabase.table("safeguarding_alerts").insert(alert_row).execute()
+        alert_id = inserted.data[0]["id"] if inserted.data else None
+    except Exception as e:
+        print(f"[safeguarding] insert failed: {e}")
+        return {"recorded": False, "reason": str(e)}
+
+    # Email the safeguarding lead immediately (best-effort).
+    lead = SAFEGUARDING_EMAIL or _extract_from_address(EMAIL_FROM)
+    emailed = False
+    if lead:
+        name = (user.get("first_name") or "") + " " + (user.get("surname") or "")
+        subject = f"[YOPEY SAFEGUARDING — {severity.upper()}] {category.replace('_', ' ')}"
+        body = (
+            "A YOPEY Befriender chatbot conversation has triggered a safeguarding "
+            "alert. Please review and follow YOPEY's safeguarding procedure.\n\n"
+            f"Young person: {name.strip() or 'unknown'}\n"
+            f"Email: {user.get('email') or 'not on file'}\n"
+            f"Age: {user.get('age') or 'unknown'}\n"
+            f"Category: {category}\n"
+            f"Severity: {severity}\n\n"
+            f"What the bot summarised:\n{summary}\n\n"
+            "Open the dashboard → Safeguarding tab to read the full conversation "
+            "and mark this as actioned.\n\n"
+            "This is an automated alert. The young person was also shown helpline "
+            "details (The Mix, Samaritans, Childline, 999) in the chat."
+        )
+        emailed = send_email(lead, subject, body)
+        if emailed and alert_id:
+            try:
+                supabase.table("safeguarding_alerts").update(
+                    {"notified_email": True}
+                ).eq("id", alert_id).execute()
+            except Exception:
+                pass
+
+    print(
+        f"[safeguarding] {severity} alert recorded for user {redact_id(user_id)} "
+        f"({category}); lead emailed: {emailed}"
+    )
+    return {"recorded": True, "alert_id": alert_id, "emailed": emailed}
+
+
+def _extract_from_address(from_header: str) -> Optional[str]:
+    """'YOPEY <hello@yopey.org>' -> 'hello@yopey.org'."""
+    m = re.search(r"<([^>]+)>", from_header or "")
+    if m:
+        return m.group(1).strip()
+    return from_header.strip() if "@" in (from_header or "") else None
+
+
 def send_nudge_reminders() -> int:
     """Daily cron job. Returns number of nudges sent."""
     if not supabase:
@@ -2267,7 +2391,17 @@ def send_nudge_reminders() -> int:
 # PART 5: CHAT ENGINE
 # ============================================================
 
-def execute_tool(tool_name: str, args: dict, user_id: str) -> str:
+def execute_tool(tool_name: str, args: dict, user_id: str, trigger_message: Optional[str] = None) -> str:
+    if tool_name == "raise_safeguarding_concern":
+        result = raise_safeguarding_alert(
+            user_id=user_id,
+            category=args.get("category", "other"),
+            summary=args.get("summary", ""),
+            trigger_message=trigger_message,
+        )
+        # The tool result is internal; the LLM never surfaces it to the teen.
+        return json.dumps({"status": "recorded", "internal": result})
+
     if tool_name == "search_care_homes":
         results = search_care_homes(
             postcode=args["postcode"],
@@ -2459,7 +2593,9 @@ def chat(user_message: str, user_id: str) -> str:
 
         for tool_call in message.tool_calls:
             args = json.loads(tool_call.function.arguments)
-            result = execute_tool(tool_call.function.name, args, user_id)
+            result = execute_tool(
+                tool_call.function.name, args, user_id, trigger_message=user_message
+            )
             history.append({
                 "role": "tool",
                 "tool_call_id": tool_call.id,
@@ -3087,6 +3223,91 @@ def dashboard_surveys():
     """Individual survey responses joined with user name/email for Tony's review."""
     res = supabase.table("dashboard_survey_pre").select("*").limit(500).execute()
     return res.data or []
+
+
+@app.get("/api/dashboard/safeguarding", dependencies=[Depends(require_dashboard_auth)])
+def dashboard_safeguarding():
+    """Safeguarding alerts, newest first, joined with the young person's details."""
+    res = (
+        supabase.table("safeguarding_alerts")
+        .select("*, users(first_name, surname, email, age)")
+        .order("created_at", desc=True)
+        .limit(500)
+        .execute()
+    )
+    rows = res.data or []
+    out = []
+    for r in rows:
+        u = r.get("users") or {}
+        out.append({
+            "id": r["id"],
+            "user_id": r["user_id"],
+            "full_name": ((u.get("first_name") or "") + " " + (u.get("surname") or "")).strip(),
+            "email": u.get("email"),
+            "age": u.get("age"),
+            "category": r["category"],
+            "severity": r["severity"],
+            "summary": r.get("summary"),
+            "notified_email": r.get("notified_email"),
+            "resolved": r.get("resolved"),
+            "resolved_by": r.get("resolved_by"),
+            "resolved_at": r.get("resolved_at"),
+            "created_at": r["created_at"],
+        })
+    return out
+
+
+@app.get("/api/dashboard/conversation/{user_id}", dependencies=[Depends(require_dashboard_auth)])
+def dashboard_conversation(user_id: str):
+    """
+    Returns a user's chat transcript — but ONLY if there is at least one
+    safeguarding alert for them. This enforces the data-minimisation choice:
+    the safeguarding lead can read transcripts for flagged conversations only,
+    not browse everyone's chats.
+    """
+    flag = (
+        supabase.table("safeguarding_alerts")
+        .select("id")
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    if not flag.data:
+        raise HTTPException(
+            status_code=403,
+            detail="Transcripts are viewable only for conversations with a safeguarding flag.",
+        )
+    raw = load_conversation(user_id)
+    # Strip tool plumbing — show only the human-readable turns.
+    transcript = [
+        {"role": m["role"], "content": m.get("content") or ""}
+        for m in raw
+        if m.get("role") in ("user", "assistant") and m.get("content")
+    ]
+    return {"user_id": user_id, "messages": transcript}
+
+
+class ResolveAlertRequest(BaseModel):
+    resolved_by: str = Field(min_length=1, max_length=80)
+    notes: Optional[str] = None
+
+
+@app.post(
+    "/api/dashboard/safeguarding/{alert_id}/resolve",
+    dependencies=[Depends(require_dashboard_auth)],
+)
+def resolve_safeguarding(alert_id: str, req: ResolveAlertRequest):
+    """Mark a safeguarding alert as actioned by a named person."""
+    try:
+        supabase.table("safeguarding_alerts").update({
+            "resolved": True,
+            "resolved_by": req.resolved_by,
+            "resolved_at": _now_iso(),
+            "notes": req.notes,
+        }).eq("id", alert_id).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not resolve: {e}")
+    return {"status": "resolved"}
 
 
 @app.post("/api/dashboard/mark-reply", dependencies=[Depends(require_dashboard_auth)])

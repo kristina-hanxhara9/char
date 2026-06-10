@@ -265,6 +265,29 @@ ORDER BY u.created_at DESC;
 -- The backend uses the service_role key so it bypasses RLS.
 -- This blocks anyone from accessing data with the anon key directly.
 
+-- 10. SAFEGUARDING ALERTS — escalation when a teen discloses something
+-- sensitive. The bot calls raise_safeguarding_concern; the backend records
+-- it here and emails the safeguarding lead immediately. The lead reviews the
+-- flagged conversation transcript and resolves it from the dashboard.
+CREATE TABLE safeguarding_alerts (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    category TEXT NOT NULL,              -- self_harm | abuse | danger | distress | other
+    severity TEXT NOT NULL DEFAULT 'high',
+    summary TEXT,
+    trigger_message TEXT,
+    notified_email BOOLEAN DEFAULT FALSE,
+    resolved BOOLEAN DEFAULT FALSE,
+    resolved_by TEXT,
+    resolved_at TIMESTAMPTZ,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX idx_safeguarding_open
+    ON safeguarding_alerts (created_at DESC) WHERE resolved = FALSE;
+CREATE INDEX idx_safeguarding_user ON safeguarding_alerts (user_id);
+
+
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE contacts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE conversations ENABLE ROW LEVEL SECURITY;
@@ -274,3 +297,4 @@ ALTER TABLE email_responses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE care_home_searches ENABLE ROW LEVEL SECURITY;
 ALTER TABLE survey_responses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE training_resources ENABLE ROW LEVEL SECURITY;
+ALTER TABLE safeguarding_alerts ENABLE ROW LEVEL SECURITY;

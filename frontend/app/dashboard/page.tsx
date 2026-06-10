@@ -5,10 +5,11 @@ import Link from "next/link";
 import DashboardLogin from "@/components/dashboard/Login";
 import StatsCards from "@/components/dashboard/StatsCards";
 import DataTable from "@/components/dashboard/DataTable";
+import SafeguardingPanel from "@/components/dashboard/SafeguardingPanel";
 import { adminDeleteUser, fetchDashboard, markReply } from "@/lib/api";
 import { dashPasswordStorage } from "@/lib/storage";
 
-type Tab = "all" | "waiting" | "stuck" | "matched" | "surveys";
+type Tab = "all" | "waiting" | "stuck" | "matched" | "surveys" | "safeguarding";
 
 const TABS: { key: Tab; label: string; path: string }[] = [
   { key: "all", label: "All users", path: "users" },
@@ -16,6 +17,7 @@ const TABS: { key: Tab; label: string; path: string }[] = [
   { key: "stuck", label: "Stuck (7+ days, no contact)", path: "stuck" },
   { key: "matched", label: "Matched", path: "matched" },
   { key: "surveys", label: "Surveys", path: "surveys" },
+  { key: "safeguarding", label: "Safeguarding", path: "safeguarding" },
 ];
 
 const SURVEY_QUESTIONS = [
@@ -73,6 +75,17 @@ export default function DashboardPage() {
     if (!password) return;
     const t = TABS.find((x) => x.key === tab);
     if (!t) return;
+    // The Safeguarding tab is a self-contained component that fetches its own
+    // data — skip the generic table fetch (and its summary refresh).
+    if (tab === "safeguarding") {
+      try {
+        const s = await fetchDashboard("summary", password);
+        setSummary(s);
+      } catch (e: any) {
+        setError(e.message);
+      }
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -149,7 +162,8 @@ export default function DashboardPage() {
   }
 
   // Column definitions — re-built per render because they close over the handlers above
-  const COLUMNS: Record<Tab, { key: string; label: string; render?: (r: any) => any }[]> = {
+  // Safeguarding renders its own component, so it's excluded from the column map.
+  const COLUMNS: Record<Exclude<Tab, "safeguarding">, { key: string; label: string; render?: (r: any) => any }[]> = {
     all: [
       { key: "full_name", label: "Name" },
       { key: "age", label: "Age" },
@@ -371,12 +385,14 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {loading ? (
+        {tab === "safeguarding" ? (
+          <SafeguardingPanel password={password} />
+        ) : loading ? (
           <div className="text-center text-gray-400 py-12">Loading...</div>
         ) : (
           <DataTable
             title={TABS.find((t) => t.key === tab)?.label || ""}
-            columns={COLUMNS[tab]}
+            columns={COLUMNS[tab as Exclude<Tab, "safeguarding">]}
             rows={rows}
             emptyMessage={
               tab === "surveys"

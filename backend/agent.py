@@ -2967,7 +2967,8 @@ def require_user_token(
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    # `llm` doubles as a deploy marker — confirms which build is live.
+    return {"ok": True, "llm": f"gemini ({BRAIN_MODEL})"}
 
 
 def _record_email_response(user_id: str, stage: int, answer: str) -> None:

@@ -29,6 +29,8 @@ services:
         sync: false
       - key: RESEND_API_KEY
         sync: false
+      - key: CRON_SECRET
+        sync: false
       - key: EMAIL_FROM
         value: YOPEY Befriender <hello@yopey.org>
       - key: CQC_PARTNER_CODE

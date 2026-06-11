@@ -16,6 +16,7 @@ import os
 import re
 import socket
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
@@ -54,6 +55,7 @@ GEMINI_KEY = _real_env("GEMINI_API_KEY")
 SUPABASE_URL = _real_env("SUPABASE_URL")
 SUPABASE_KEY = _real_env("SUPABASE_KEY")
 RESEND_API_KEY = _real_env("RESEND_API_KEY")
+CRON_SECRET = _real_env("CRON_SECRET")
 EMAIL_FROM = os.environ.get("EMAIL_FROM", "YOPEY Befriender <hello@yopey.org>")
 CQC_PARTNER_CODE = os.environ.get("CQC_PARTNER_CODE", "").strip()
 # Subscription key from CQC API portal (apply at api-portal.service.cqc.org.uk).
@@ -933,6 +935,38 @@ def search_care_homes(postcode: str, radius_miles: int = 1, max_results: int = 5
     if cached:
         return cached
 
+    # Coalesce concurrent searches for the same postcode: the wizard's
+    # precompute usually starts ~30-60s before the chat auto-search arrives.
+    # The late caller waits for the in-flight search and reuses its cached
+    # result instead of paying for (and waiting on) a full duplicate.
+    key = _normalize_postcode(postcode)
+    with _INFLIGHT_LOCK:
+        evt = _INFLIGHT_SEARCHES.get(key)
+        is_owner = evt is None
+        if is_owner:
+            evt = threading.Event()
+            _INFLIGHT_SEARCHES[key] = evt
+    if not is_owner:
+        evt.wait(timeout=120)
+        cached = _check_search_cache(postcode, radius_miles, max_results)
+        if cached:
+            return cached
+        # Owner failed or found nothing cacheable — fall through and search.
+
+    try:
+        return _search_care_homes_uncached(postcode, radius_miles, max_results)
+    finally:
+        if is_owner:
+            with _INFLIGHT_LOCK:
+                _INFLIGHT_SEARCHES.pop(key, None)
+            evt.set()
+
+
+_INFLIGHT_SEARCHES: dict[str, threading.Event] = {}
+_INFLIGHT_LOCK = threading.Lock()
+
+
+def _search_care_homes_uncached(postcode: str, radius_miles: int, max_results: int) -> dict:
     location = postcode_to_latlng(postcode)
     if "error" in location:
         return {
@@ -3387,6 +3421,22 @@ def precompute_search_endpoint(
         raise HTTPException(status_code=422, detail="Not a valid UK postcode.")
     background_tasks.add_task(_run_precompute, pc)
     return {"status": "warming"}
+
+
+@app.post("/api/cron/daily")
+def cron_daily(x_cron_secret: str = Header(default="")):
+    """
+    Fires the due reminder emails: contact nudges (3/5/7/10 days) and the
+    post-match drip. The walkers exist but nothing in-process schedules them
+    — a GitHub Actions workflow (.github/workflows/daily-reminders.yml) hits
+    this endpoint once a day with the shared secret.
+    """
+    if not CRON_SECRET or not hmac.compare_digest(x_cron_secret, CRON_SECRET):
+        raise HTTPException(status_code=401, detail="Bad or missing x-cron-secret")
+    nudges = send_nudge_reminders()
+    drips = send_post_match_drip()
+    print(f"[cron] daily run: {nudges} nudges, {drips} post-match emails sent")
+    return {"nudges_sent": nudges, "post_match_sent": drips}
 
 
 class ReturnLinkRequest(BaseModel):

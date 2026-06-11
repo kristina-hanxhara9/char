@@ -1,0 +1,22 @@
+name: Daily reminder emails
+
+# Fires the backend's reminder walkers (contact nudges + post-match drip)
+# once a day. The backend endpoint is protected by the CRON_SECRET shared
+# secret — set it both in this repo's Actions secrets and in Render's env.
+on:
+  schedule:
+    - cron: "0 9 * * *" # 09:00 UTC daily (10:00 UK in summer)
+  workflow_dispatch: {}
+
+jobs:
+  send-reminders:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit the cron endpoint
+        # Generous timeout + retries: Render's free tier sleeps when idle and
+        # takes ~1 min to wake, so the first attempt may be slow or dropped.
+        run: |
+          curl -fsS --retry 3 --retry-delay 30 --retry-all-errors --max-time 180 \
+            -X POST \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            "${{ vars.BACKEND_URL || 'https://yopey-backend.onrender.com' }}/api/cron/daily"

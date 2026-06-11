@@ -75,6 +75,13 @@ export async function exchangeReturnToken(token: string): Promise<ReturnExchange
   return res.json();
 }
 
+export function pingBackend(): void {
+  // Wake Render's free-tier instance (cold start can be ~1 min) the moment
+  // the onboarding page opens, so the precompute fired on Step-1 Continue —
+  // and the chat right after — hit a server that's already awake.
+  fetch(`${API_URL}/health`).catch(() => undefined);
+}
+
 export function precomputeSearch(postcode: string): Promise<void> {
   // Fire-and-forget — the backend warms the care_home_searches cache so the
   // auto-search on /chat returns instantly. Failures are swallowed; the

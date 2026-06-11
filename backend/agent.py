@@ -513,13 +513,8 @@ def _search_care_homes_via_cqc(
                 "number_of_beds": detail.get("numberOfBeds", "Unknown"),
                 "last_inspection_date": last_inspection,
                 "cqc_url": f"https://www.cqc.org.uk/location/{loc_id}",
-                # Direct carehome.co.uk search URL — but enrichment may
-                # overwrite with a Google site-search if this URL ever turns out
-                # to be broken. Stored under the canonical key the prompt + LLM
-                # use.
-                "carehome_co_uk_url": (
-                    "https://www.google.com/search?q="
-                    + requests.utils.quote(f'site:carehome.co.uk "{detail.get("name", "")}"')
+                "carehome_co_uk_url": _carehome_directory_url(
+                    detail.get("name", ""), detail.get("postalCode", "")
                 ),
             })
         page += 1
@@ -589,6 +584,33 @@ def _parse_json_response(text: str) -> Optional[dict]:
 # Forces JSON-mode output from the grounded care-home search. Only `name` is
 # required — the setdefault normalisation below fills the rest, matching how
 # gaps were handled before.
+def _carehome_directory_url(name: str, postcode: str = "") -> str:
+    """Google search restricted to carehome.co.uk for this home's profile.
+    Includes the postcode: same-named homes exist in different towns, and
+    name-only queries surface the wrong one (live-testing feedback)."""
+    query = f'site:carehome.co.uk "{name}" {postcode}'.strip()
+    return "https://www.google.com/search?q=" + requests.utils.quote(query)
+
+
+def _validated_url(url: str) -> Optional[str]:
+    """Return the URL if its domain actually responds, else None. Web-search
+    JSON routinely invents care-home domains, and a dead link is worse than no
+    link. Any HTTP response except 404/410 counts as alive — many care-home
+    sites answer bots with 403/405."""
+    if not url.lower().startswith(("http://", "https://")):
+        url = "https://" + url
+    try:
+        resp = requests.head(
+            url,
+            timeout=4,
+            allow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (YOPEY link check)"},
+        )
+        return None if resp.status_code in (404, 410) else url
+    except requests.RequestException:
+        return None
+
+
 CARE_HOMES_SCHEMA = {
     "type": "object",
     "properties": {
@@ -605,7 +627,6 @@ CARE_HOMES_SCHEMA = {
                     "cqc_rating": {"type": "string"},
                     "distance_miles": {"type": "number"},
                     "website": {"type": "string", "nullable": True},
-                    "cqc_url": {"type": "string", "nullable": True},
                     "service_types": {"type": "array", "items": {"type": "string"}},
                     "specialisms": {"type": "array", "items": {"type": "string"}},
                     "number_of_beds": {"type": "integer", "nullable": True},
@@ -667,7 +688,6 @@ def _search_care_homes_via_web(
         '    "cqc_rating": "Good|Outstanding|Requires improvement|Inadequate|Not yet rated|Unknown",\n'
         '    "distance_miles": 0.5,\n'
         '    "website": "https://..." or null,\n'
-        '    "cqc_url": "https://www.cqc.org.uk/location/..." or null,\n'
         '    "service_types": ["Care home with nursing"] or [],\n'
         '    "specialisms": ["Dementia", "Older people"] or [],\n'
         '    "number_of_beds": 42 or null,\n'
@@ -683,10 +703,8 @@ def _search_care_homes_via_web(
         "- specialisms are the populations they serve (e.g. 'Dementia', 'Older people', 'Learning disability').\n"
         "- last_inspection_date in ISO format YYYY-MM-DD if known, otherwise null.\n"
         "- Use null (not empty string) for unknown numeric/date fields.\n"
-        "- cqc_url MUST be unique per care home — never reuse the same URL for two\n"
-        "  different homes. If you cannot find the correct CQC location ID for a\n"
-        "  home, use null instead of guessing or reusing another home's URL.\n"
-        "- website is the care home's OWN domain (not a directory listing).\n"
+        "- website is the care home's OWN domain (not a directory listing), and only\n"
+        "  if it appeared in your search results — null if unsure, never guess.\n"
         "- Sort by ascending distance.\n"
         "- If you cannot find any nearby, return {\"care_homes\": []}."
     )
@@ -714,23 +732,14 @@ def _search_care_homes_via_web(
         h.setdefault("number_of_beds", None)
         h.setdefault("last_inspection_date", None)
         h.setdefault("website", None)
-        h.setdefault("cqc_url", None)
+        # Model-guessed CQC location URLs were nearly all 404s in live testing
+        # — only the CQC API path (real locationIds) gets a profile link. The
+        # bot's template omits the line when cqc_url is null.
+        h["cqc_url"] = None
         h["source"] = "web_search"
 
     # Belt-and-braces: drop any model results that exceed the requested radius
     homes = [h for h in homes if (h.get("distance_miles") or 0) <= radius_miles]
-
-    # De-duplicate cqc_url: the model occasionally returns the same CQC URL for
-    # two different homes. We can't tell which is right, so null all duplicates
-    # rather than show the wrong link.
-    seen_cqc_urls: set[str] = set()
-    for h in homes:
-        cqc_url = h.get("cqc_url")
-        if cqc_url:
-            if cqc_url in seen_cqc_urls:
-                h["cqc_url"] = None
-            else:
-                seen_cqc_urls.add(cqc_url)
 
     return {
         "search_area": area,
@@ -827,6 +836,11 @@ def _enrich_with_emails(homes: list[dict], fallback_postcode: str) -> None:
         clean_manager = (
             manager if manager and "not listed" not in manager.lower() else None
         )
+        # Web-search websites are model-claimed; CQC-path ones come from the
+        # regulator's records. Validate the former here so the dead-domain
+        # check rides the existing per-home worker fan-out.
+        if home.get("source") == "web_search" and home.get("website"):
+            home["website"] = _validated_url(home["website"])
         return find_email_via_web_search(
             care_home_name=name,
             town_or_postcode=home.get("postcode") or fallback_postcode,
@@ -863,9 +877,8 @@ def _enrich_with_emails(homes: list[dict], fallback_postcode: str) -> None:
         # pages. Google always returns useful results; the top hit is almost
         # always the home's profile on carehome.co.uk. One click from the chat.
         if not home.get("carehome_co_uk_url") and home.get("name"):
-            home["carehome_co_uk_url"] = (
-                "https://www.google.com/search?q="
-                + requests.utils.quote(f'site:carehome.co.uk "{home["name"]}"')
+            home["carehome_co_uk_url"] = _carehome_directory_url(
+                home["name"], home.get("postcode") or ""
             )
 
 

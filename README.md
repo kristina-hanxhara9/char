@@ -72,7 +72,7 @@ Example crontab — 9am UTC daily:
 
 | Var | Required | Notes |
 |-----|----------|-------|
-| `GEMINI_API_KEY` | Yes | from aistudio.google.com — use a billing-enabled project (paid tier excludes data from training) |
+| `GEMINI_API_KEY` | Yes | from aistudio.google.com (new keys start `AQ.`, legacy `AIza` accepted) — use a billing-enabled project (paid tier excludes data from training) |
 | `SUPABASE_URL` | Yes | https://xxxxx.supabase.co |
 | `SUPABASE_KEY` | Yes | **service_role** key |
 | `RESEND_API_KEY` | For nudges | resend.com |

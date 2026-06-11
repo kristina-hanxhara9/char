@@ -385,80 +385,86 @@ def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float
     return R * 2 * math.asin(math.sqrt(a))
 
 
-def _search_care_homes_via_cqc(
-    postcode: str,
-    radius_miles: int,
-    max_results: int,
-    prefetched_location: Optional[dict] = None,
-) -> dict:
-    """Live CQC API search. Requires CQC_SUBSCRIPTION_KEY (apply at api-portal.service.cqc.org.uk)."""
-    location = prefetched_location if prefetched_location is not None else postcode_to_latlng(postcode)
-    if "error" in location:
-        return {"error": location["error"], "results": []}
-
+def _fetch_cqc_care_homes(location: dict) -> list | dict:
+    """All registered care homes in the postcode's local authority, each with
+    a computed distance_miles, sorted nearest-first. Fetched ONCE so the
+    dispatcher's radius widening is an in-memory filter instead of repeated
+    API sweeps (serial details for a dense borough took minutes). Returns an
+    {"error": ...} dict on auth/transport failure so the caller can fall back
+    to web search — with a loud log if the subscription key is rejected."""
     user_lat = location["latitude"]
     user_lng = location["longitude"]
     local_authority = location["admin_district"]
-    care_homes: list[dict] = []
 
-    headers = {}
-    if CQC_SUBSCRIPTION_KEY:
-        headers["Ocp-Apim-Subscription-Key"] = CQC_SUBSCRIPTION_KEY
+    headers = {"Ocp-Apim-Subscription-Key": CQC_SUBSCRIPTION_KEY}
+    common_params: dict[str, Any] = (
+        {"partnerCode": CQC_PARTNER_CODE} if CQC_PARTNER_CODE else {}
+    )
 
     # Filter by localAuthority first — drastically reduces the result set vs
-    # paginating through all of England.
-    page = 1
-    max_pages = 6
+    # paginating through all of England. List pages are cheap (ids only here);
+    # the expensive per-home details are fetched in parallel below.
+    loc_ids: list[str] = []
     seen_ids: set[str] = set()
-    while len(care_homes) < 30 and page <= max_pages:
+    page = 1
+    while page <= 6:
         try:
-            params: dict[str, Any] = {
-                "careHome": "Y",
-                "page": page,
-                "perPage": 50,
-                "localAuthority": local_authority,
-            }
-            if CQC_PARTNER_CODE:
-                params["partnerCode"] = CQC_PARTNER_CODE
-
             resp = requests.get(
                 "https://api.service.cqc.org.uk/public/v1/locations",
-                params=params,
+                params={
+                    **common_params,
+                    "careHome": "Y",
+                    "page": page,
+                    "perPage": 50,
+                    "localAuthority": local_authority,
+                },
                 headers=headers,
                 timeout=20,
             )
+            if resp.status_code in (401, 403):
+                print(
+                    f"[cqc] subscription key rejected ({resp.status_code}) — "
+                    "check CQC_SUBSCRIPTION_KEY in Render"
+                )
+                return {"error": f"CQC auth failed ({resp.status_code})", "results": []}
+            resp.raise_for_status()
             data = resp.json()
         except Exception as e:
-            return {"error": f"CQC API error: {e}", "results": care_homes}
+            return {"error": f"CQC API error: {e}", "results": []}
 
         locations = data.get("locations", [])
         if not locations:
             break
-
         for loc in locations:
             loc_id = loc.get("locationId")
-            if not loc_id or loc_id in seen_ids:
-                continue
-            seen_ids.add(loc_id)
-            try:
-                detail_resp = requests.get(
-                    f"https://api.service.cqc.org.uk/public/v1/locations/{loc_id}",
-                    params={"partnerCode": CQC_PARTNER_CODE} if CQC_PARTNER_CODE else None,
-                    headers=headers,
-                    timeout=10,
-                )
-                detail = detail_resp.json()
-            except Exception:
-                continue
+            if loc_id and loc_id not in seen_ids:
+                seen_ids.add(loc_id)
+                loc_ids.append(loc_id)
+        page += 1
 
+    def _detail(loc_id: str) -> Optional[dict]:
+        try:
+            r = requests.get(
+                f"https://api.service.cqc.org.uk/public/v1/locations/{loc_id}",
+                params=common_params or None,
+                headers=headers,
+                timeout=10,
+            )
+            return r.json() if r.status_code == 200 else None
+        except Exception:
+            return None
+
+    care_homes: list[dict] = []
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        for detail in executor.map(_detail, loc_ids[:150]):
+            if not detail:
+                continue
             lat = detail.get("onspdLatitude")
             lng = detail.get("onspdLongitude")
             if not (lat and lng):
                 continue
 
             distance = haversine_miles(user_lat, user_lng, lat, lng)
-            if distance > radius_miles:
-                continue
 
             manager_name: Optional[str] = None
             for activity in detail.get("regulatedActivities", []):
@@ -518,19 +524,14 @@ def _search_care_homes_via_cqc(
                 "specialisms": specialisms,
                 "number_of_beds": detail.get("numberOfBeds", "Unknown"),
                 "last_inspection_date": last_inspection,
-                "cqc_url": f"https://www.cqc.org.uk/location/{loc_id}",
+                "cqc_url": f"https://www.cqc.org.uk/location/{detail.get('locationId', '')}",
                 "carehome_co_uk_url": _carehome_directory_url(
                     detail.get("name", ""), detail.get("postalCode", "")
                 ),
             })
-        page += 1
 
     care_homes.sort(key=lambda x: x["distance_miles"])
-    return {
-        "search_area": local_authority,
-        "source": "cqc",
-        "results": care_homes[:max_results],
-    }
+    return care_homes
 
 
 def _extract_json_object(text: str) -> Optional[dict]:
@@ -764,9 +765,10 @@ def _normalize_postcode(postcode: str) -> str:
     return postcode.strip().upper().replace(" ", "")
 
 
-# Bump when the cached payload shape/links change (e.g. postcoded directory
-# URLs in v2) — old-format rows are skipped and refreshed on next search.
-SEARCH_CACHE_VERSION = 2
+# Bump when the cached payload shape/links change — old-format rows are
+# skipped and refreshed on next search. v2: postcoded directory URLs.
+# v3: CQC-primary cutover (forces web-era caches to refresh via CQC).
+SEARCH_CACHE_VERSION = 3
 
 
 def _check_search_cache(postcode: str, radius_miles: int, max_results: int) -> Optional[dict]:
@@ -986,20 +988,28 @@ def _search_care_homes_uncached(postcode: str, radius_miles: int, max_results: i
     max_radius = steps[-1]
 
     if CQC_SUBSCRIPTION_KEY:
-        for step in steps:
-            attempt = _search_care_homes_via_cqc(
-                postcode, step, max_results, prefetched_location=location
-            )
-            if attempt.get("results"):
-                attempt.pop("error", None)
-                attempt["actual_radius_miles"] = step
-                attempt["requested_radius_miles"] = radius_miles
-                if step > radius_miles:
-                    print(f"[search] auto-expanded {redact_postcode(postcode)} from {radius_miles}mi → {step}mi to find results")
-                _enrich_with_emails(attempt["results"], postcode)
-                _save_search_to_cache(postcode, radius_miles, max_results, attempt)
-                return attempt
-        # CQC empty (or erroring) at every radius → fall through to the web.
+        cqc_homes = _fetch_cqc_care_homes(location)
+        if isinstance(cqc_homes, dict):
+            print(f"[search] CQC failed, using web fallback: {str(cqc_homes.get('error', ''))[:80]}")
+        else:
+            # One authority-wide fetch; radius widening is a pure in-memory
+            # filter (homes arrive sorted nearest-first).
+            for step in steps:
+                within = [h for h in cqc_homes if h["distance_miles"] <= step]
+                if within:
+                    attempt = {
+                        "search_area": location.get("admin_district") or postcode,
+                        "source": "cqc",
+                        "results": within[:max_results],
+                        "actual_radius_miles": step,
+                        "requested_radius_miles": radius_miles,
+                    }
+                    if step > radius_miles:
+                        print(f"[search] auto-expanded {redact_postcode(postcode)} from {radius_miles}mi → {step}mi to find results")
+                    _enrich_with_emails(attempt["results"], postcode)
+                    _save_search_to_cache(postcode, radius_miles, max_results, attempt)
+                    return attempt
+            # No homes within 10 miles in this authority → fall through to the web.
 
     attempt = _search_care_homes_via_web(
         postcode, max_results, radius_miles=max_radius, prefetched_location=location

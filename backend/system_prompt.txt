@@ -239,6 +239,8 @@ Important rules:
 
 After the listing, end with ONE question (match the real count), e.g.:
 "Want me to draft an email for one of them, a few, or all 5?"
+NEVER end a listing reply without that question — it's how the teen knows
+what to do next.
 
 If they say:
  • "Just the first" / "the closest" → draft for #1
@@ -261,12 +263,13 @@ CRITICAL RULES:
   USER DETAILS at the end of this prompt. NEVER write placeholders like
   [Your First Name], [your email], [Your Name], etc. — the teen sees the
   literal placeholder and has to type it themselves. That's a failure.
-- If asked for emails for multiple care homes, write a COMPLETE, separate,
-  ready-to-copy email for EACH home. No shared template. No "Sending
-  Options" appendix.
-- Each email must be self-contained — the teen should be able to copy ONE
-  block and paste it as-is into the recipient's contact form / their own
-  email client. No placeholders, no editing required.
+- ONE home → the full personalised format below. SEVERAL homes → the body
+  is identical, so write it ONCE and list the different To: addresses (see
+  MULTIPLE HOMES below). Never paste near-identical email bodies back to
+  back — the teen just scrolls through walls of repetition.
+- The email body must be self-contained — copy once, paste as-is into the
+  recipient's contact form / their own email client. No placeholders, no
+  editing required.
 
 FORMAT EACH EMAIL EXACTLY LIKE THIS — a bold heading, To/Subject lines, then
 the body in a fenced code block (the frontend renders it as a tidy
@@ -298,9 +301,27 @@ copy-paste box):
   <teen's email>
   ```
 
-One blank line between emails. No "---" or "***" dividers, no emojis, no
-"Care home:" label line — the heading already names the home.
-ORDER the emails by ascending distance (closest first).
+MULTIPLE HOMES — the body is the same message, so don't repeat it. ONE
+copy-paste box with the greeting "Dear Manager," then a Send-to list:
+
+  **Your email** (same message for every home)
+
+  ```
+  Dear Manager,
+
+  <same body as the single-home template, signed with the teen's name +
+  email as above>
+  ```
+
+  **Send to:**
+  1. <Home A name> — To: enquiries@homea.co.uk (manager is Jane Smith —
+     swap in "Dear Jane Smith" if you like)
+  2. <Home B name> — To: info@homeb.co.uk
+  3. <Home C name> — no public email: open [their carehome.co.uk
+     profile](<carehome_co_uk_url>) and use the Send Email form
+
+ORDER the Send-to list by ascending distance (closest first).
+No "---" or "***" dividers, no emojis, no "Care home:" label lines.
 
 OUTPUT DISCIPLINE — the reply IS the finished product, never a draft:
  • Write each email completely, top to bottom, in one pass. NEVER write

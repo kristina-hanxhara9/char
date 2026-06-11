@@ -27,6 +27,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 from pydantic import BaseModel, EmailStr, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -44,7 +45,7 @@ load_dotenv()
 def _real_env(name: str) -> str | None:
     """Return an env var only if it's non-empty AND doesn't look like a placeholder."""
     v = os.environ.get(name, "").strip()
-    if not v or v.startswith(("xxxx", "sk-...", "AIza...", "re_...", "eyJ...", "https://xxxx")):
+    if not v or v.startswith(("xxxx", "sk-...", "AIza...", "AQ.xxxx", "re_...", "eyJ...", "https://xxxx")):
         return None
     return v
 
@@ -86,13 +87,51 @@ if not (GEMINI_KEY and SUPABASE_URL and SUPABASE_KEY):
         "server will start but /api/onboard and /api/chat will return 503."
     )
 
+# Gemini can't combine google_search grounding with custom function
+# declarations in one request, so the chat brain (custom tools only) and the
+# web-search helpers (grounding only) stay on separate models and configs.
+BRAIN_MODEL = "gemini-3.5-flash"        # agentic tool use + safeguarding judgement
+SEARCH_MODEL = "gemini-3.1-flash-lite"  # cheap Google-Search-grounded lookups
+
 # 60s cap: google-genai sets no default timeout, and /api/chat is synchronous
 # — a hung call must not pin a worker.
-gemini_client: Optional[genai.Client] = (
-    genai.Client(api_key=GEMINI_KEY, http_options=genai_types.HttpOptions(timeout=60_000))
-    if GEMINI_KEY
-    else None
-)
+_GEMINI_HTTP_OPTS = genai_types.HttpOptions(timeout=60_000)
+
+# Which Google backend serves this key — surfaced in /health for remote diagnosis.
+GEMINI_BACKEND = "unconfigured"
+
+
+def _make_gemini_client() -> Optional[genai.Client]:
+    """Resolve the AQ.-key ambiguity at boot: AI Studio auth keys authenticate
+    against the Developer API, Vertex AI express-mode keys need vertexai=True,
+    and the prefix doesn't say which. One free metadata GET tells them apart
+    (the Developer API rejects foreign AQ. tokens with 401 UNAUTHENTICATED).
+    Legacy AIza keys skip the probe; keyless boot stays offline-safe."""
+    global GEMINI_BACKEND
+    if not GEMINI_KEY:
+        return None
+    client = genai.Client(api_key=GEMINI_KEY, http_options=_GEMINI_HTTP_OPTS)
+    GEMINI_BACKEND = "developer-api"
+    if not GEMINI_KEY.startswith("AQ."):
+        return client
+    try:
+        client.models.get(model=BRAIN_MODEL)
+        print("[info] Gemini backend: Developer API (AI Studio auth key)")
+        return client
+    except genai_errors.APIError as e:
+        if getattr(e, "code", None) in (401, 403):
+            print("[info] Gemini backend: Vertex AI express mode")
+            GEMINI_BACKEND = "vertex-express"
+            return genai.Client(
+                vertexai=True, api_key=GEMINI_KEY, http_options=_GEMINI_HTTP_OPTS
+            )
+        raise  # quota/5xx at boot: surface it rather than guess the wrong backend
+    except Exception as e:
+        print(f"[warn] Gemini auth probe failed ({e}); assuming Developer API")
+        return client
+
+
+gemini_client: Optional[genai.Client] = _make_gemini_client()
 supabase: Optional[Client] = None
 if SUPABASE_URL and SUPABASE_KEY:
     try:
@@ -115,12 +154,6 @@ with open(_PROMPT_PATH, "r") as f:
 
 # Keep last N message pairs in the LLM context — bounds token cost
 MAX_LLM_HISTORY = 40  # 20 user/assistant turns
-
-# Gemini can't combine google_search grounding with custom function
-# declarations in one request, so the chat brain (custom tools only) and the
-# web-search helpers (grounding only) stay on separate models and configs.
-BRAIN_MODEL = "gemini-3.5-flash"        # agentic tool use + safeguarding judgement
-SEARCH_MODEL = "gemini-3.1-flash-lite"  # cheap Google-Search-grounded lookups
 
 GOOGLE_SEARCH_TOOL = genai_types.Tool(google_search=genai_types.GoogleSearch())
 
@@ -2967,8 +3000,8 @@ def require_user_token(
 
 @app.get("/health")
 def health():
-    # `llm` doubles as a deploy marker — confirms which build is live.
-    return {"ok": True, "llm": f"gemini ({BRAIN_MODEL})"}
+    # `llm` doubles as a deploy marker — confirms which build/backend is live.
+    return {"ok": True, "llm": f"gemini/{GEMINI_BACKEND} ({BRAIN_MODEL})"}
 
 
 def _record_email_response(user_id: str, stage: int, answer: str) -> None:

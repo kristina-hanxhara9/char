@@ -23,7 +23,7 @@ from typing import Any, Literal, Optional, Union
 
 import requests
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from google import genai
@@ -697,7 +697,9 @@ def _search_care_homes_via_web(
         "Rules:\n"
         "- ONLY include real, currently-listed care homes. Never invent.\n"
         "- If you cannot find a phone number, use 'Not listed' (not a fake one).\n"
-        f"- distance_miles must be <= {radius_miles}. Exclude anything farther.\n"
+        f"- Prefer the homes closest to {postcode}. distance_miles is your best\n"
+        f"  estimate of miles from {postcode}; if you can't estimate it, use null —\n"
+        "  do NOT drop an otherwise-good nearby home over distance uncertainty.\n"
         "- If the manager's name is unknown, leave it as 'the Manager (not listed)'.\n"
         "- service_types are CQC categories (e.g. 'Care home with nursing', 'Care home without nursing').\n"
         "- specialisms are the populations they serve (e.g. 'Dementia', 'Older people', 'Learning disability').\n"
@@ -882,27 +884,16 @@ def _enrich_with_emails(homes: list[dict], fallback_postcode: str) -> None:
             )
 
 
-def _attempt_search_at_radius(
-    postcode: str, radius_miles: int, max_results: int, location: dict
-) -> dict:
-    """One pass through CQC (if key) or web search at a specific radius."""
-    if CQC_SUBSCRIPTION_KEY:
-        result = _search_care_homes_via_cqc(
-            postcode, radius_miles, max_results, prefetched_location=location
-        )
-        if result.get("results"):
-            result.pop("error", None)
-            return result
-    return _search_care_homes_via_web(
-        postcode, max_results, radius_miles=radius_miles, prefetched_location=location
-    )
-
-
 def search_care_homes(postcode: str, radius_miles: int = 1, max_results: int = 5) -> dict:
     """
     Find care homes near a UK postcode. Default radius is 1 mile (Tony's spec:
-    'within a mile of where they are in education and/or live'); we widen
-    progressively to 2, 3, 5, 10 if nothing's in range.
+    'within a mile of where they are in education and/or live').
+
+    The CQC API (cheap calls, accurate distances) widens 1→2→3→5→10 miles
+    until homes appear. The web fallback makes ONE wide grounded call instead:
+    grounded Gemini can't honour fine-grained distance cutoffs (live failure:
+    dense London postcode came back empty at every step), and each extra call
+    costs ~10s plus a flake chance. Results are sorted nearest-first.
 
     Result envelope includes `actual_radius_miles` so the bot can mention if it
     had to look further out than the teen's immediate area.
@@ -929,34 +920,45 @@ def search_care_homes(postcode: str, radius_miles: int = 1, max_results: int = 5
     steps = [r for r in base_steps if r >= radius_miles]
     if not steps:
         steps = [radius_miles]
+    max_radius = steps[-1]
 
-    result: dict = {"search_area": postcode, "source": "none", "results": []}
-    for step in steps:
-        attempt = _attempt_search_at_radius(postcode, step, max_results, location)
-        # Bail out on upstream error (Gemini 429/5xx, CQC outage) — there's no
-        # point retrying at a different radius if the search service itself is
-        # broken. Without this, a single Gemini rate-limit triggers 5 wasted retries.
-        if attempt.get("error") and not attempt.get("results"):
-            attempt["actual_radius_miles"] = step
-            attempt["requested_radius_miles"] = radius_miles
-            err_msg = str(attempt.get("error", ""))[:80]
-            print(f"[search] error envelope at {step}mi, bailing out: {err_msg}")
-            return attempt
-        if attempt.get("results"):
-            attempt["actual_radius_miles"] = step
-            attempt["requested_radius_miles"] = radius_miles
-            if step > radius_miles:
-                print(f"[search] auto-expanded {redact_postcode(postcode)} from {radius_miles}mi → {step}mi to find results")
-            _enrich_with_emails(attempt["results"], postcode)
-            _save_search_to_cache(postcode, radius_miles, max_results, attempt)
-            return attempt
-        result = attempt  # keep last attempt for the no-results return
+    if CQC_SUBSCRIPTION_KEY:
+        for step in steps:
+            attempt = _search_care_homes_via_cqc(
+                postcode, step, max_results, prefetched_location=location
+            )
+            if attempt.get("results"):
+                attempt.pop("error", None)
+                attempt["actual_radius_miles"] = step
+                attempt["requested_radius_miles"] = radius_miles
+                if step > radius_miles:
+                    print(f"[search] auto-expanded {redact_postcode(postcode)} from {radius_miles}mi → {step}mi to find results")
+                _enrich_with_emails(attempt["results"], postcode)
+                _save_search_to_cache(postcode, radius_miles, max_results, attempt)
+                return attempt
+        # CQC empty (or erroring) at every radius → fall through to the web.
 
-    # No homes even at 10 miles
-    result["actual_radius_miles"] = steps[-1]
-    result["requested_radius_miles"] = radius_miles
-    _save_search_to_cache(postcode, radius_miles, max_results, result)
-    return result
+    attempt = _search_care_homes_via_web(
+        postcode, max_results, radius_miles=max_radius, prefetched_location=location
+    )
+    attempt["requested_radius_miles"] = radius_miles
+    if attempt.get("error") and not attempt.get("results"):
+        attempt["actual_radius_miles"] = max_radius
+        print(f"[search] web error envelope: {str(attempt.get('error', ''))[:80]}")
+        return attempt
+
+    results = attempt.get("results") or []
+    results.sort(key=lambda h: h.get("distance_miles") or 99)
+    if results:
+        furthest = max((h.get("distance_miles") or 0) for h in results)
+        attempt["actual_radius_miles"] = (
+            max(radius_miles, math.ceil(furthest)) if furthest else max_radius
+        )
+        _enrich_with_emails(results, postcode)
+    else:
+        attempt["actual_radius_miles"] = max_radius
+    _save_search_to_cache(postcode, radius_miles, max_results, attempt)
+    return attempt
 
 
 # ============================================================
@@ -3297,31 +3299,39 @@ class PrecomputeSearchRequest(BaseModel):
     postcode: str = Field(min_length=3, max_length=10)
 
 
-@app.post("/api/precompute-search")
-@limiter.limit("20/minute")
-def precompute_search_endpoint(req: PrecomputeSearchRequest, request: Request):
-    """
-    Warm the care_home_searches cache for a postcode while the teen is still
-    filling out the survey + consent steps. The frontend fires this in the
-    background after Step 1 so when /chat opens the auto-search hits a warm
-    cache instantly (saves the 5-15s search wall-clock).
-
-    Idempotent: a cached hit short-circuits inside search_care_homes anyway.
-    Returns immediately even if the search is still running — the caller is
-    fire-and-forget.
-    """
-    _require_services()
+def _run_precompute(postcode: str) -> None:
     try:
-        result = search_care_homes(req.postcode, radius_miles=1, max_results=5)
+        result = search_care_homes(postcode, radius_miles=1, max_results=5)
+        print(
+            f"[precompute] {redact_postcode(postcode)}: "
+            f"{len(result.get('results', []))} homes cached"
+        )
     except Exception as e:
         # Don't fail the wizard for a precompute miss — chat will retry
-        print(f"[precompute] failed for {redact_postcode(req.postcode)}: {e}")
-        return {"warmed": False}
-    return {
-        "warmed": bool(result.get("results")),
-        "found": len(result.get("results", [])),
-        "source": result.get("source"),
-    }
+        print(f"[precompute] failed for {redact_postcode(postcode)}: {e}")
+
+
+@app.post("/api/precompute-search", status_code=202)
+@limiter.limit("20/minute")
+def precompute_search_endpoint(
+    req: PrecomputeSearchRequest, request: Request, background_tasks: BackgroundTasks
+):
+    """
+    Warm the care_home_searches cache for a postcode while the teen is still
+    filling out the survey + consent steps. The frontend fires this after the
+    Step-1 "Continue" press so the /chat auto-search hits a warm cache.
+
+    Responds 202 immediately; the search runs as a background task after the
+    response, so the wizard's fire-and-forget fetch never waits on (or gets
+    cut off by) a long search. Idempotent: a cached hit short-circuits inside
+    search_care_homes anyway.
+    """
+    _require_services()
+    pc = req.postcode.strip().upper()
+    if not UK_POSTCODE_PATTERN.search(pc):
+        raise HTTPException(status_code=422, detail="Not a valid UK postcode.")
+    background_tasks.add_task(_run_precompute, pc)
+    return {"status": "warming"}
 
 
 class ReturnLinkRequest(BaseModel):

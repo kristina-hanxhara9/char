@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { onboard, preloadInitialChat, submitSurvey, type SurveyAnswers } from "@/lib/api";
+import { onboard, pingBackend, preloadInitialChat, submitSurvey, type SurveyAnswers } from "@/lib/api";
 import { userStorage } from "@/lib/storage";
 import Step1Personal, { emptyPersonal, type PersonalData } from "@/components/onboard/Step1Personal";
 import Step2Survey, { emptySurvey, type SurveyData } from "@/components/onboard/Step2Survey";
@@ -25,6 +25,12 @@ export default function OnboardForm() {
   // Step 3 submit. For home-search it resolves immediately.
   const [postcodePromise, setPostcodePromise] = useState<Promise<string> | null>(null);
   const [schoolError, setSchoolError] = useState<string | null>(null);
+
+  // Render's free tier sleeps when idle; waking it takes ~1 min. Ping as soon
+  // as the form opens so the Step-1 precompute (and chat) find it warm.
+  useEffect(() => {
+    pingBackend();
+  }, []);
 
   async function handleFinalSubmit(consented: boolean) {
     if (!consented) {

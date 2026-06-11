@@ -3449,6 +3449,52 @@ def cron_daily(x_cron_secret: str = Header(default="")):
     return {"nudges_sent": nudges, "post_match_sent": drips}
 
 
+@app.get("/api/test-reminder")
+@limiter.limit("3/minute")
+def test_reminder(
+    request: Request,
+    email: EmailStr,
+    secret: str = "",
+    delay_seconds: int = 60,
+):
+    """
+    Operator utility: send a sample stage-1 nudge to `email` after a short
+    delay (default 60s) through the REAL template + Resend path, so a freshly
+    configured RESEND_API_KEY can be verified end-to-end. Open in a browser:
+
+        /api/test-reminder?email=you@example.com&secret=<CRON_SECRET or dashboard password>
+
+    The sample care home is clearly labelled TEST and the Yes/No buttons point
+    at a non-existent contact, so clicking them won't touch real data.
+    """
+    valid_secrets = [s for s in (CRON_SECRET, DASHBOARD_PASSWORD) if s and s != "changeme"]
+    if not any(hmac.compare_digest(secret, s) for s in valid_secrets):
+        raise HTTPException(status_code=401, detail="Bad or missing secret")
+    if not RESEND_API_KEY:
+        raise HTTPException(status_code=503, detail="RESEND_API_KEY not configured")
+    delay = max(1, min(delay_seconds, 600))
+
+    fake_user = {"id": "test-user", "first_name": "Test", "email": str(email)}
+    fake_contact = {
+        "id": "test-contact",
+        "care_home_name": "Sunrise Care Home (TEST)",
+        "care_home_phone": "01234 567890",
+    }
+
+    def _send() -> None:
+        try:
+            subject, text_body, html_body = render_nudge_email(
+                NUDGE_SCHEDULE[0], fake_user, fake_contact
+            )
+            ok = send_email(str(email), f"[TEST] {subject}", text_body, html_body)
+            print(f"[test-reminder] sent={ok} to {redact_email(str(email))} after {delay}s")
+        except Exception as e:
+            print(f"[test-reminder] failed: {e}")
+
+    threading.Timer(delay, _send).start()
+    return {"scheduled": True, "to": str(email), "in_seconds": delay}
+
+
 class ReturnLinkRequest(BaseModel):
     email: EmailStr
 

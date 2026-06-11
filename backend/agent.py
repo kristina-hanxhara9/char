@@ -125,7 +125,11 @@ def _make_gemini_client() -> Optional[genai.Client]:
             return genai.Client(
                 vertexai=True, api_key=GEMINI_KEY, http_options=_GEMINI_HTTP_OPTS
             )
-        raise  # quota/5xx at boot: surface it rather than guess the wrong backend
+        # Quota/5xx at boot: guess the Developer API rather than crash — a
+        # failed boot flunks Render's health check, which silently keeps the
+        # PREVIOUS build live. A wrong guess surfaces in chat logs instead.
+        print(f"[warn] Gemini auth probe inconclusive ({e}); assuming Developer API")
+        return client
     except Exception as e:
         print(f"[warn] Gemini auth probe failed ({e}); assuming Developer API")
         return client
@@ -758,6 +762,11 @@ def _normalize_postcode(postcode: str) -> str:
     return postcode.strip().upper().replace(" ", "")
 
 
+# Bump when the cached payload shape/links change (e.g. postcoded directory
+# URLs in v2) — old-format rows are skipped and refreshed on next search.
+SEARCH_CACHE_VERSION = 2
+
+
 def _check_search_cache(postcode: str, radius_miles: int, max_results: int) -> Optional[dict]:
     """
     Return a recent cached search result if any cached row's actual_radius_miles
@@ -785,6 +794,8 @@ def _check_search_cache(postcode: str, radius_miles: int, max_results: int) -> O
 
     for row in res.data:
         payload = row["payload"]
+        if payload.get("cache_version") != SEARCH_CACHE_VERSION:
+            continue
         cached_actual = payload.get("actual_radius_miles") or row.get("radius_miles") or 0
         cached_max = row.get("max_results") or len(payload.get("results", []))
         if cached_actual >= radius_miles and cached_max >= max_results:
@@ -805,7 +816,7 @@ def _save_search_to_cache(
             "radius_miles": radius_miles,
             "max_results": max_results,
             "source": result.get("source"),
-            "payload": result,
+            "payload": {**result, "cache_version": SEARCH_CACHE_VERSION},
         }).execute()
     except Exception as e:
         print(f"[search-cache] insert failed: {e}")
@@ -882,6 +893,24 @@ def _enrich_with_emails(homes: list[dict], fallback_postcode: str) -> None:
             home["carehome_co_uk_url"] = _carehome_directory_url(
                 home["name"], home.get("postcode") or ""
             )
+
+    # The email finder occasionally returns the SAME address for two different
+    # homes (cross-contamination from chain sites / directory pages). It's
+    # almost never right for both — keep it on the closest home (lists arrive
+    # sorted) and null the rest so they fall back to the directory link.
+    # Manually-verified entries are exempt: a chain sharing one real inbox is
+    # legitimate.
+    seen_emails: set[str] = set()
+    for home in homes:
+        em = (home.get("email") or "").strip().lower()
+        if not em:
+            continue
+        if em in seen_emails and not home.get("email_verified"):
+            home["email"] = None
+            home["email_is_generic"] = False
+            home["email_reason"] = "duplicate of another home's address"
+        else:
+            seen_emails.add(em)
 
 
 def search_care_homes(postcode: str, radius_miles: int = 1, max_results: int = 5) -> dict:

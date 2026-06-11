@@ -2746,6 +2746,24 @@ FALLBACK_REPLY = (
 )
 
 
+def _diagnose_empty_reply(response, where: str) -> None:
+    """One log line explaining WHY a reply had no visible text — finish_reason
+    MAX_TOKENS means thinking ate the output budget, SAFETY means filtered.
+    Remote debugging on Render depends on this line."""
+    try:
+        cand = (getattr(response, "candidates", None) or [None])[0]
+        usage = getattr(response, "usage_metadata", None)
+        print(
+            f"[chat] empty reply at {where}: "
+            f"finish_reason={getattr(cand, 'finish_reason', None)} "
+            f"thoughts_tokens={getattr(usage, 'thoughts_token_count', None)} "
+            f"output_tokens={getattr(usage, 'candidates_token_count', None)} "
+            f"prompt_feedback={getattr(response, 'prompt_feedback', None)}"
+        )
+    except Exception as e:
+        print(f"[chat] empty reply at {where} (diagnostics failed: {e})")
+
+
 def _build_contacts_context(user_id: str) -> str:
     """Render this user's care home contacts as a short prompt block for the bot."""
     if not supabase:
@@ -2834,8 +2852,10 @@ def chat(user_message: str, user_id: str) -> str:
                 )
             ),
             # Thinking tokens count toward max_output_tokens — a tight cap
-            # truncates mid-thought into an empty visible reply.
-            max_output_tokens=2048,
+            # truncates mid-thought into an empty visible reply (seen live:
+            # 2048 wasn't enough for thinking + a 5-home listing). Cap, not
+            # cost: typical replies are far smaller.
+            max_output_tokens=8192,
             thinking_config=genai_types.ThinkingConfig(thinking_level="LOW"),
             safety_settings=BRAIN_SAFETY_SETTINGS,
             # temperature deliberately unset: Gemini 3 guidance is to keep the
@@ -2892,9 +2912,15 @@ def chat(user_message: str, user_id: str) -> str:
             + [model_content, genai_types.Content(role="user", parts=response_parts)],
             config=_brain_config(allow_tools=False),
         )
-        assistant_reply = _visible_text(follow_up) or FALLBACK_REPLY
+        assistant_reply = _visible_text(follow_up)
+        if not assistant_reply:
+            _diagnose_empty_reply(follow_up, "follow-up")
+            assistant_reply = FALLBACK_REPLY
     else:
-        assistant_reply = _visible_text(response) or FALLBACK_REPLY
+        assistant_reply = _visible_text(response)
+        if not assistant_reply:
+            _diagnose_empty_reply(response, "first-call")
+            assistant_reply = FALLBACK_REPLY
 
     history.append({"role": "assistant", "content": assistant_reply})
     save_conversation(user_id, history)

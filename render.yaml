@@ -27,6 +27,9 @@ services:
         sync: false
       - key: ALLOWED_ORIGINS
         sync: false
+      # Optional — defaults in code already match Vercel preview deploys.
+      - key: ALLOWED_ORIGIN_REGEX
+        sync: false
       - key: RESEND_API_KEY
         sync: false
       - key: CRON_SECRET

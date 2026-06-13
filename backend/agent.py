@@ -9,6 +9,7 @@ and dashboard endpoints.
 import base64
 import hashlib
 import hmac
+import html
 import ipaddress
 import json
 import math
@@ -896,14 +897,22 @@ def _enrich_with_emails(homes: list[dict], fallback_postcode: str) -> None:
                 # Other homes' results stay intact.
 
     for home, er in zip(homes, email_results):
-        if er.get("found"):
+        # Low confidence here means the web-found address is on a different
+        # domain than the home's official website — likely lifted from an
+        # unrelated page. A wrong address is worse than none, so suppress it and
+        # let the home fall back to the carehome.co.uk directory link below.
+        if er.get("found") and er.get("confidence") != "low":
             home["email"] = er.get("email")
             home["email_verified"] = bool(er.get("verified"))
             home["email_is_generic"] = bool(er.get("is_generic_inbox"))
             home["email_source"] = er.get("source")
         else:
             home["email"] = None
-            home["email_reason"] = er.get("reason") or "Not found"
+            home["email_reason"] = (
+                "unverified address (didn't match official site)"
+                if er.get("found")
+                else er.get("reason") or "Not found"
+            )
 
         # Google site:carehome.co.uk search — far more reliable than
         # carehome.co.uk's own search URL, which often returns empty / 404-style
@@ -1067,6 +1076,32 @@ GENERIC_LOCAL_PARTS = {"info", "enquiries", "contact", "admin", "reception", "of
 def _looks_like_generic(email: str) -> bool:
     local = email.split("@", 1)[0].lower()
     return local in GENERIC_LOCAL_PARTS
+
+
+# Two-label public suffixes common for UK orgs — enough to find the
+# registrable domain without pulling in the full Public Suffix List.
+_TWO_LABEL_TLDS = {"co.uk", "org.uk", "gov.uk", "nhs.uk", "ac.uk", "sch.uk", "me.uk", "ltd.uk"}
+
+
+def _registrable_domain(url_or_email: Optional[str]) -> Optional[str]:
+    """Best-effort registrable domain: 'www.foo.co.uk' or 'a@foo.co.uk' -> 'foo.co.uk'.
+    A heuristic (not the full PSL), used to corroborate a web-found email
+    against a care home's known official website."""
+    s = (url_or_email or "").strip().lower()
+    if not s:
+        return None
+    if "@" in s:
+        host = s.split("@", 1)[1]
+    else:
+        host = urlparse(s if "://" in s else "http://" + s).hostname or ""
+    host = host.strip(".")
+    if "." not in host:
+        return None
+    labels = host.split(".")
+    last_two = ".".join(labels[-2:])
+    if last_two in _TWO_LABEL_TLDS and len(labels) >= 3:
+        return ".".join(labels[-3:])
+    return last_two
 
 
 def _outward_code(postcode: Optional[str]) -> Optional[str]:
@@ -1396,8 +1431,11 @@ def find_email_via_web_search(
         f"'{safe_name}' in {locator}.{manager_hint} "
         f"Prefer the registered manager's direct email if listed on the "
         f"care home's own website. Otherwise return the general contact "
-        f"email. Reply with ONLY the email address (or the literal text "
-        f"'NOT FOUND' if you cannot find one). Do not invent or guess."
+        f"email. Only use an address shown on the care home's own official "
+        f"website or a reputable care directory (carehome.co.uk, nhs.uk, "
+        f"cqc.org.uk); if you only see it on an unrelated third-party page, "
+        f"return 'NOT FOUND'. Reply with ONLY the email address (or the "
+        f"literal text 'NOT FOUND' if you cannot find one). Do not invent or guess."
     )
 
     try:
@@ -1413,13 +1451,28 @@ def find_email_via_web_search(
     non_generic = [m for m in matches if not _looks_like_generic(m)]
     chosen = non_generic[0] if non_generic else matches[0]
     is_generic = _looks_like_generic(chosen)
+    confidence = "medium" if is_generic else "high"
+    notes = "generic inbox" if is_generic else None
+
+    # Corroborate against the official website domain when we know it. A match
+    # is strong; a mismatch can mean the address was lifted from an unrelated
+    # page, so flag it low-confidence — the enrichment path then prefers the
+    # directory link over a possibly-wrong address.
+    site_domain = _registrable_domain(website)
+    domain_match: Optional[bool] = None
+    if site_domain:
+        email_domain = _registrable_domain(chosen)
+        domain_match = email_domain == site_domain
+        if not domain_match:
+            confidence = "low"
+            notes = (notes + "; " if notes else "") + "domain differs from official site"
 
     _save_email_to_cache(
         care_home_name=care_home_name,
         email=chosen,
         postcode=town_or_postcode,
         source="web_search",
-        notes=("generic inbox" if is_generic else None),
+        notes=notes,
     )
 
     return {
@@ -1427,8 +1480,9 @@ def find_email_via_web_search(
         "email": chosen,
         "source": "web_search",
         "verified": False,
-        "confidence": "medium" if is_generic else "high",
+        "confidence": confidence,
         "is_generic_inbox": is_generic,
+        "domain_match": domain_match,
     }
 
 
@@ -1909,12 +1963,20 @@ def render_nudge_email(stage_def: dict, user: dict, contact: dict) -> tuple[str,
         f"— YOPEY"
     )
 
+    # HTML email: escape every user/web-sourced value (name, care-home name,
+    # phone) so a crafted value can't inject markup. The stage templates
+    # themselves are ours and trusted.
+    fmt_html = {k: html.escape(str(v)) for k, v in fmt.items()}
+    name_html = fmt_html["name"]
+    intro_html = stage_def["intro"].format(**fmt_html)
+    question_html = f"Have you heard back from {fmt_html['care_home']}?"
+
     html_body = f"""<!DOCTYPE html>
 <html><body style="font-family:-apple-system,system-ui,sans-serif;background:#fdf4ff;margin:0;padding:24px;color:#1f2937;">
   <div style="max-width:520px;margin:24px auto;background:white;border-radius:24px;padding:28px;box-shadow:0 4px 24px rgba(124,58,237,0.1);">
-    <p style="margin:0 0 12px;font-size:16px;">Hi {user['first_name']}!</p>
-    <p style="margin:0 0 18px;font-size:16px;line-height:1.6;">{intro}</p>
-    <p style="margin:0 0 18px;font-size:17px;font-weight:600;color:#1f2937;">{question}</p>
+    <p style="margin:0 0 12px;font-size:16px;">Hi {name_html}!</p>
+    <p style="margin:0 0 18px;font-size:16px;line-height:1.6;">{intro_html}</p>
+    <p style="margin:0 0 18px;font-size:17px;font-weight:600;color:#1f2937;">{question_html}</p>
     <div style="text-align:center;margin:22px 0;">
       <div style="margin:6px 0;">
         <a href="{links['accepted_url']}" style="display:inline-block;padding:13px 22px;background:#10b981;color:white;text-decoration:none;border-radius:14px;font-weight:600;font-size:15px;min-width:240px;">🎉 They said YES (accepted)</a>
@@ -2338,12 +2400,18 @@ def render_post_match_email(stage_def: dict, user: dict, contact: dict) -> tuple
         f"— YOPEY"
     )
 
+    # HTML email: escape user/web-sourced values before they hit the markup.
+    fmt_html = {k: html.escape(str(v)) for k, v in fmt.items()}
+    name_html = fmt_html["name"]
+    intro_html = stage_def["intro"].format(**fmt_html)
+    question_html = stage_def["question"].format(**fmt_html)
+
     html_body = f"""<!DOCTYPE html>
 <html><body style="font-family:-apple-system,system-ui,sans-serif;background:#fdf4ff;margin:0;padding:24px;color:#1f2937;">
   <div style="max-width:520px;margin:24px auto;background:white;border-radius:24px;padding:28px;box-shadow:0 4px 24px rgba(124,58,237,0.1);">
-    <p style="margin:0 0 12px;font-size:16px;">Hi {user['first_name']}!</p>
-    <p style="margin:0 0 18px;font-size:16px;line-height:1.6;">{intro.replace(chr(10)+chr(10), '</p><p style="margin:0 0 18px;font-size:16px;line-height:1.6;">')}</p>
-    <p style="margin:0 0 18px;font-size:17px;font-weight:600;color:#1f2937;">{question}</p>
+    <p style="margin:0 0 12px;font-size:16px;">Hi {name_html}!</p>
+    <p style="margin:0 0 18px;font-size:16px;line-height:1.6;">{intro_html.replace(chr(10)+chr(10), '</p><p style="margin:0 0 18px;font-size:16px;line-height:1.6;">')}</p>
+    <p style="margin:0 0 18px;font-size:17px;font-weight:600;color:#1f2937;">{question_html}</p>
     <div style="text-align:center;margin:26px 0;">
       <a href="{links['yes_url']}" style="display:inline-block;padding:14px 26px;background:#7c3aed;color:white;text-decoration:none;border-radius:14px;font-weight:600;font-size:16px;margin:6px;">{stage_def['yes_label']}</a>
       <a href="{links['no_url']}" style="display:inline-block;padding:14px 26px;background:#f3f4f6;color:#374151;text-decoration:none;border-radius:14px;font-weight:600;font-size:16px;margin:6px;border:1px solid #e5e7eb;">{stage_def['no_label']}</a>
@@ -3230,7 +3298,7 @@ def _handle_outcome_click(data: dict) -> HTMLResponse:
         return HTMLResponse(content=RESPONSE_PAGE_TEMPLATE.format(
             title="Brilliant news! 🎉",
             body=(
-                f"<p>Amazing — <strong>{contact['care_home_name']}</strong> said yes!</p>"
+                f"<p>Amazing — <strong>{html.escape(contact['care_home_name'])}</strong> said yes!</p>"
                 f"<p>I've just sent you another email with everything you need before "
                 f"your first visit (DBS check, training videos, conversation starters). "
                 f"Keep an eye on your inbox.</p>"

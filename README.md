@@ -18,6 +18,34 @@ frontend/     Next.js 14 site (landing, onboard form, chat, admin dashboard)
 - **Escalating nudges** — automated reminder emails at 3, 5, 7, 10 days
 - **Dashboard** — password-protected admin view with stats and tables (name, surname, email, age, postcode)
 - **Mobile-first** — Tailwind responsive design, safe-area insets, 16px inputs (no iOS zoom)
+- **Embeddable widget** — one `<script>` tag drops the whole flow onto any partner website as a floating chat bubble (see below)
+
+## Embeddable widget
+
+Partners add the chatbot to their own site with a single line before `</body>`:
+
+```html
+<script src="https://YOUR-FRONTEND-DOMAIN/widget.js" async></script>
+```
+
+This injects a floating launcher button that opens the full YOPEY funnel
+(onboarding → care-home search → email drafting) inside an iframe served from
+the YOPEY frontend. Because the iframe runs on YOPEY's own origin, the partner
+site needs **no API keys and no CORS/server changes** — and its CSS/JS can't
+reach into the chat.
+
+- Live demo + copy-paste snippet: `https://YOUR-FRONTEND-DOMAIN/widget-demo.html`
+- Loader source: [frontend/public/widget.js](frontend/public/widget.js)
+- Options (set as `data-` attributes on the script tag): `data-yopey-position`
+  (`left`/`right`), `data-yopey-label`, `data-yopey-color`, `data-yopey-entry`
+  (`/chat` lets returning visitors resume instead of re-onboarding)
+
+The app detects it is framed (via `lib/embed.ts`) and hides its own page header
+so the widget panel shows a single, clean chrome. Note: if you later add
+`X-Frame-Options` or a `frame-ancestors` CSP to the frontend, allow framing or
+the widget will stop loading. Browser third-party-storage limits (notably
+Safari) mean a returning visitor may need to onboard again; a single visit
+always works end to end.
 
 ## Quick start (local dev)
 

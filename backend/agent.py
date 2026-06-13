@@ -82,7 +82,20 @@ FRONTEND_BASE_URL = os.environ.get(
 ).rstrip("/")
 ALLOWED_ORIGINS = [
     o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+    if o.strip()
 ]
+# Always trust the configured production frontend, even if it wasn't listed.
+if FRONTEND_BASE_URL and FRONTEND_BASE_URL not in ALLOWED_ORIGINS:
+    ALLOWED_ORIGINS.append(FRONTEND_BASE_URL)
+
+# Vercel gives every preview deploy a unique hash subdomain
+# (yopey-befriender-<hash>-<team>.vercel.app), so an exact allow-list can't
+# keep up. Match this project's deploys by regex instead. Override with
+# ALLOWED_ORIGIN_REGEX if the frontend moves to a different host or domain.
+ALLOWED_ORIGIN_REGEX = os.environ.get(
+    "ALLOWED_ORIGIN_REGEX",
+    r"https://yopey-befriender[a-z0-9-]*\.vercel\.app",
+)
 
 if not (GEMINI_KEY and SUPABASE_URL and SUPABASE_KEY):
     print(
@@ -3123,6 +3136,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX or None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

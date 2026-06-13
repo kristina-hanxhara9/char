@@ -25,6 +25,14 @@
   if (window.__yopeyWidgetLoaded) return;
   window.__yopeyWidgetLoaded = true;
 
+  // Never render inside another frame (e.g. our own embed iframe, where the
+  // app already shows the chat) — prevents a widget-in-widget.
+  try {
+    if (window.self !== window.top) return;
+  } catch (e) {
+    return;
+  }
+
   var script =
     document.currentScript ||
     (function () {

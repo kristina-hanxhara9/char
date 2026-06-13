@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Script from "next/script";
 import ReturningUserCta from "@/components/ReturningUserCta";
 
 export default function LandingPage() {
@@ -106,6 +107,11 @@ export default function LandingPage() {
           </Link>
         </div>
       </footer>
+
+      {/* The embeddable chat bubble, shown here so we can preview it on the
+          live site. It opens the onboarding/chat flow in an iframe; the loader
+          skips itself inside that frame, so there's no widget-in-widget. */}
+      <Script src="/widget.js" strategy="afterInteractive" />
     </main>
   );
 }

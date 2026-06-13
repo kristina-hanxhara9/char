@@ -3676,6 +3676,12 @@ def request_return_link(req: ReturnLinkRequest, request: Request):
         else:
             # Resend not configured — log the link so dev/testing still works.
             print(f"[return] (email not sent) link for {redact_email(email)}: {link}")
+    else:
+        # No account for this address — nothing is sent (anti-enumeration). Logged
+        # so "my return email never arrived" is diagnosable: this line means the
+        # email isn't in the users table (e.g. onboarding never completed), as
+        # opposed to a send failure (which logs '[email] Failed to send …').
+        print(f"[return] no account for {redact_email(email)} — nothing sent")
 
     return {"sent": True}
 

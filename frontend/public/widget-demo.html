@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>YOPEY Befriender — widget demo</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+        max-width: 680px;
+        margin: 40px auto;
+        padding: 0 20px 120px;
+        color: #222;
+        line-height: 1.55;
+      }
+      h1 { color: #b97d00; }
+      code { background: #f3f3f3; padding: 2px 6px; border-radius: 6px; font-size: 0.92em; }
+      pre {
+        background: #1a1a1a; color: #f5f5f5; padding: 16px; border-radius: 10px;
+        overflow: auto; font-size: 14px;
+      }
+      .note { background: #fff7e6; border: 1px solid #ffd980; border-radius: 10px; padding: 14px 16px; }
+    </style>
+  </head>
+  <body>
+    <h1>YOPEY Befriender — embeddable widget</h1>
+    <p>
+      This page stands in for a partner's website (a school, college, or
+      community site). The chat bubble in the bottom-right corner is the widget.
+      Click it to onboard and find a care home — exactly what a visitor would do.
+    </p>
+
+    <h2>Add it to any website</h2>
+    <p>Paste this single line just before the closing <code>&lt;/body&gt;</code> tag:</p>
+    <pre id="snippet">loading…</pre>
+
+    <h2>Optional settings</h2>
+    <p>Tweak the launcher with <code>data-</code> attributes on the same tag:</p>
+    <ul>
+      <li><code>data-yopey-position="left"</code> — bubble on the left</li>
+      <li><code>data-yopey-label="Volunteer with us"</code> — launcher text</li>
+      <li><code>data-yopey-color="#FFAD00"</code> — brand colour</li>
+      <li><code>data-yopey-entry="/chat"</code> — let returning users resume instead of re-onboarding</li>
+    </ul>
+
+    <p class="note">
+      <strong>Heads up:</strong> some browsers (Safari especially) restrict
+      storage for content embedded on another site, so a returning visitor may
+      be asked to onboard again. The full flow — onboard, search, draft an email
+      — always works within a single visit.
+    </p>
+
+    <!-- Build the copy-paste snippet using whatever origin serves this page. -->
+    <script>
+      (function () {
+        var src = location.origin + "/widget.js";
+        document.getElementById("snippet").textContent =
+          '<script src="' + src + '" async><\/script>';
+      })();
+    </script>
+
+    <!-- The live widget on this very page. -->
+    <script src="/widget.js" async></script>
+  </body>
+</html>

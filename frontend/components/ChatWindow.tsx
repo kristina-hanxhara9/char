@@ -8,6 +8,7 @@ import TypingIndicator from "@/components/TypingIndicator";
 import ChatInput from "@/components/ChatInput";
 import { consumeInitialChat, fetchUser, sendMessage } from "@/lib/api";
 import { userStorage, type StoredUser } from "@/lib/storage";
+import { useIsEmbedded } from "@/lib/embed";
 
 // Tracks whether we've already auto-searched for this user in this browser
 // session. Survives refreshes within the same tab, resets in a new tab —
@@ -53,6 +54,9 @@ export default function ChatWindow() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Inside the embeddable widget the host panel supplies its own title bar, so
+  // we drop our page header to avoid a double chrome.
+  const embedded = useIsEmbedded();
 
   // Guard against React 18 StrictMode double-invoke + general
   // belt-and-braces against effect re-runs.
@@ -226,30 +230,32 @@ export default function ChatWindow() {
 
   return (
     <div className="h-screen flex flex-col">
-      <header className="shrink-0 bg-yopey-accent px-4 md:px-6 py-3 safe-top">
-        <div className="flex items-center justify-between max-w-3xl mx-auto">
-          <Link href="/" className="flex items-baseline gap-1.5">
-            <span className="font-extrabold text-lg text-yopey-primary tracking-wide">YOPEY</span>
-            <span className="text-base text-yopey-primary/80 italic">Befriender</span>
-          </Link>
-          <div className="flex items-center gap-1">
-            <Link
-              href="/privacy"
-              className="text-sm text-yopey-primary hover:bg-white/30 font-semibold px-3 py-1.5 rounded-lg min-h-[44px] grid place-items-center"
-            >
-              Privacy
+      {!embedded && (
+        <header className="shrink-0 bg-yopey-accent px-4 md:px-6 py-3 safe-top">
+          <div className="flex items-center justify-between max-w-3xl mx-auto">
+            <Link href="/" className="flex items-baseline gap-1.5">
+              <span className="font-extrabold text-lg text-yopey-primary tracking-wide">YOPEY</span>
+              <span className="text-base text-yopey-primary/80 italic">Befriender</span>
             </Link>
-            <button
-              type="button"
-              onClick={handleEndChat}
-              className="text-sm text-yopey-primary hover:bg-white/30 font-semibold px-3 py-1.5 rounded-lg min-h-[44px] min-w-[44px]"
-              title="Sign out and redo the form"
-            >
-              Start over
-            </button>
+            <div className="flex items-center gap-1">
+              <Link
+                href="/privacy"
+                className="text-sm text-yopey-primary hover:bg-white/30 font-semibold px-3 py-1.5 rounded-lg min-h-[44px] grid place-items-center"
+              >
+                Privacy
+              </Link>
+              <button
+                type="button"
+                onClick={handleEndChat}
+                className="text-sm text-yopey-primary hover:bg-white/30 font-semibold px-3 py-1.5 rounded-lg min-h-[44px] min-w-[44px]"
+                title="Sign out and redo the form"
+              >
+                Start over
+              </button>
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
+      )}
 
       <div
         ref={scrollRef}

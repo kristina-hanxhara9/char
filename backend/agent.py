@@ -186,6 +186,22 @@ def _grounded_search(prompt: str, *, response_schema: Optional[dict] = None) -> 
 # PART 1: CARE HOME SEARCH TOOL (live CQC API)
 # ============================================================
 
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]+")
+
+
+def _inline_safe(value: Any, max_len: int = 80) -> str:
+    """Flatten an untrusted value (a stored user field, a web-search result, a
+    care-home name) for safe interpolation into an LLM prompt. Strips control
+    characters and newlines — which prompt-injection payloads use to fake a new
+    "system" section — collapses whitespace, and caps length. Defence in depth:
+    even if something malicious gets stored or is returned by a web search, it
+    cannot smuggle instructions into a prompt through one of these fields."""
+    if value is None:
+        return ""
+    s = _CONTROL_CHARS_RE.sub(" ", str(value))
+    return re.sub(r"\s+", " ", s).strip()[:max_len]
+
+
 def postcode_to_latlng(postcode: str) -> dict:
     clean = postcode.strip().replace(" ", "")
     if not clean:
@@ -1368,11 +1384,16 @@ def find_email_via_web_search(
     if not gemini_client:
         return {"found": False, "reason": "Gemini not configured"}
 
-    locator = town_or_postcode or "UK"
-    manager_hint = f" The registered manager is {manager_name}." if manager_name else ""
+    # Inputs can be web-search-sourced (care-home name) or model-chosen, so
+    # flatten them before they go into this sub-search prompt.
+    safe_name = _inline_safe(care_home_name, 120)
+    locator = _inline_safe(town_or_postcode or "UK", 60)
+    manager_hint = (
+        f" The registered manager is {_inline_safe(manager_name, 80)}." if manager_name else ""
+    )
     query = (
         f"Find the public contact email address for the UK care home "
-        f"'{care_home_name}' in {locator}.{manager_hint} "
+        f"'{safe_name}' in {locator}.{manager_hint} "
         f"Prefer the registered manager's direct email if listed on the "
         f"care home's own website. Otherwise return the general contact "
         f"email. Reply with ONLY the email address (or the literal text "
@@ -2630,7 +2651,24 @@ def execute_tool(tool_name: str, args: dict, user_id: str, trigger_message: Opti
         return json.dumps(results)
 
     if tool_name == "save_user_details":
-        clean = {k: v for k, v in args.items() if v}
+        # Allow-list the columns the model may set (mapping the tool's field
+        # names to real columns). Without this, update_user(**args) would write
+        # whatever keys the model emits — so a prompt-injected/confused model
+        # could set status, post_match_stage, etc. and corrupt the reminder and
+        # match state machine. Values are sanitized; email/stage are validated.
+        incoming = args or {}
+        clean: dict[str, Any] = {}
+        if incoming.get("surname"):
+            clean["surname"] = _inline_safe(incoming["surname"], 50)
+        if incoming.get("postcode"):
+            clean["postcode"] = _inline_safe(incoming["postcode"], 12).upper()
+        if incoming.get("school"):
+            clean["school_name"] = _inline_safe(incoming["school"], 120)
+        if incoming.get("stage") in ("sixth_form", "undergraduate"):
+            clean["stage"] = incoming["stage"]
+        email = _inline_safe(incoming.get("email"), 120)
+        if email and EMAIL_RE.fullmatch(email):
+            clean["email"] = email.lower()
         if clean:
             update_user(user_id, **clean)
         return json.dumps({"status": "saved", "fields": list(clean.keys())})
@@ -2867,14 +2905,17 @@ def _build_contacts_context(user_id: str) -> str:
         except Exception:
             days_ago = 0
 
+        # care_home_name / phone originate from web-search results, so sanitize
+        # before they enter the prompt.
+        home = _inline_safe(c["care_home_name"], 80)
         if c.get("reply_received"):
             settled_lines.append(
-                f" • {c['care_home_name']} — REPLIED ({c.get('outcome') or 'unknown'})"
+                f" • {home} — REPLIED ({_inline_safe(c.get('outcome') or 'unknown', 20)})"
             )
         else:
-            phone = c.get("care_home_phone") or "no phone on file"
+            phone = _inline_safe(c.get("care_home_phone") or "no phone on file", 30)
             waiting_lines.append(
-                f" • {c['care_home_name']} — awaiting reply (day {days_ago}, {phone})"
+                f" • {home} — awaiting reply (day {days_ago}, {phone})"
             )
 
     parts = []
@@ -2904,11 +2945,13 @@ def chat(user_message: str, user_id: str) -> str:
         + f"\n\n== YOPEY SAFEGUARDING CONTACT (a real person — use this when "
         + f"signposting) ==\n{YOPEY_SAFEGUARDING_CONTACT}\n"
         + f"\n== KNOWN USER DETAILS ==\n"
-        + f"First name: {user.get('first_name')}\n"
+        # These values are user-supplied (onboarding / save_user_details) and go
+        # into the high-privilege system instruction, so flatten them first.
+        + f"First name: {_inline_safe(user.get('first_name'), 50)}\n"
         + f"Age: {user.get('age')}\n"
-        + (f"Surname: {user.get('surname')}\n" if user.get("surname") else "")
-        + (f"Email: {user.get('email')}\n" if user.get("email") else "")
-        + (f"Postcode: {user.get('postcode')}\n" if user.get("postcode") else "")
+        + (f"Surname: {_inline_safe(user.get('surname'), 50)}\n" if user.get("surname") else "")
+        + (f"Email: {_inline_safe(user.get('email'), 120)}\n" if user.get("email") else "")
+        + (f"Postcode: {_inline_safe(user.get('postcode'), 12)}\n" if user.get("postcode") else "")
         + _build_contacts_context(user_id)
     )
 

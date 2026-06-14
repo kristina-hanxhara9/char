@@ -92,12 +92,22 @@ contacts the bot ever surfaces are the named helplines above.
 
 ## 4. Data minimisation & children's data
 
-- **Age gate:** 16+ enforced on the onboarding form and server-side
-  (`OnboardRequest.age >= 16`). DPA 2018 sets the UK age of consent for
-  information-society services at 13; we sit well above it.
+- **Age assurance:** This is self-declared age, not hard identity
+  verification — proportionate for a befriending signpost that sits inside
+  YOPEY's existing (DBS-checked, coordinator-run) onboarding. It is enforced in
+  depth: the onboarding form blocks under-16 (`Step1Personal`), the API rejects
+  it (`OnboardRequest.age = Field(ge=16)`), and the database refuses it
+  (`users.age CHECK (age >= 16)`). On top of the age field, the consent step
+  requires an explicit, unticked **"I confirm I am 16 or over"** attestation
+  (`Step3Consent`) so eligibility is a deliberate declaration, not just a number.
+  DPA 2018 sets the UK age of consent for information-society services at 13; we
+  sit well above it.
 - **Only what's needed:** name, age, email, phone, postcode, school name, the
   10-question Dementia Attitudes survey, and chat content. Each purpose is
   disclosed in the privacy notice (`/privacy`), satisfying UK GDPR Art 13.
+- **Location minimisation:** only the **postcode** is stored (the search anchor),
+  never a full address. It is never shared with care homes or third parties, is
+  redacted in logs (outward code only), and is deleted with the account.
 - **Explicit consent:** the onboarding wizard requires an explicit, unticked-by-
   default consent checkbox before any data is stored.
 - **No model training:** chat runs on Google's Gemini API under a paid
@@ -115,11 +125,19 @@ contacts the bot ever surfaces are the named helplines above.
 
 ## 5. Retention
 
-The privacy notice states data is kept while the account is active and deleted
-after **12 months of inactivity**. Automatic enforcement (a purge cron) is a
-planned follow-up; until then, deletion is available on demand via `/privacy`
-and the dashboard. **Action for YOPEY:** decide whether to enable the auto-purge
-cron before scaling beyond the pilot.
+Data is kept while the account is active and **automatically deleted after 12
+months of inactivity** (`RETENTION_DAYS`, default 365). Enforcement is real, not
+aspirational: the daily cron (`/api/cron/daily`) runs `purge_inactive_users()`,
+which deletes accounts whose most recent activity — across the user row, their
+conversation, and their care-home contacts — is older than the window. Cascade
+deletes remove every child row. On-demand deletion is also available any time
+via `/privacy` and the dashboard.
+
+**Safeguarding-records exception:** accounts that have raised a
+`safeguarding_alerts` row are **never** auto-purged. Those records are retained
+for the DSL to handle under YOPEY's safeguarding-records policy rather than being
+silently erased by a cron. **Action for YOPEY:** set the safeguarding-record
+retention period in policy and review flagged accounts accordingly.
 
 ---
 
@@ -134,7 +152,32 @@ cron before scaling beyond the pilot.
 
 ---
 
-## 7. What YOPEY still needs to do (not code)
+## 7. Care-home information accuracy (CQC ratings)
+
+The Children's Code expects information shown to young people to be accurate. A
+care-home CQC rating is high-stakes: a wrong "Good"/"Outstanding" on a home we
+point a young person toward is a serious error.
+
+- **Primary source is the live CQC register.** When `CQC_SUBSCRIPTION_KEY` is
+  set, ratings come straight from the CQC API
+  (`currentRatings.overall.rating`) and are tagged `cqc_rating_source: "cqc"`.
+  The bot may state these as fact.
+- **The web fallback never asserts a rating.** When CQC is unavailable, results
+  come from a grounded web search. The model's claimed rating is **discarded**
+  for display (kept only as `cqc_rating_claim` for the coordinator), the home is
+  tagged `cqc_rating_source: "web_unverified"`, and the bot is instructed to show
+  **no** rating and instead link out to the home's CQC profile
+  (`cqc_search_url`) so the real, current rating can be read at source.
+- This is enforced server-side (`_search_care_homes_via_web`) **and** in the
+  system prompt's "CQC RATING" rule — defence in depth, so a model lapse can't
+  surface an unverified rating on its own.
+
+**Action for YOPEY:** keep `CQC_SUBSCRIPTION_KEY` configured in production so the
+primary (verified) path is used; the fallback is a safety net, not the default.
+
+---
+
+## 8. What YOPEY still needs to do (not code)
 
 These are organisational, not software, tasks:
 
@@ -147,7 +190,12 @@ These are organisational, not software, tasks:
 4. **Complete a DPIA** (the ICO requires one for processing children's data) —
    this document plus the privacy notice provide most of the content.
 5. **Register with the ICO** as a data controller (~£40/year for charities).
-6. **Decide retention enforcement** (see §5).
+6. **Set the safeguarding-record retention period** in policy (auto-purge now
+   runs for ordinary accounts; flagged accounts are deliberately exempt — §5).
+7. **Decide on coordinator oversight of first outreach** — today the bot drafts
+   the introduction email and the young person sends it themselves; YOPEY's
+   coordinator enters at the acceptance/match stage. Confirm whether a coordinator
+   should review or be notified *before* a young person first contacts a home.
 
 ---
 
@@ -158,4 +206,6 @@ These are organisational, not software, tasks:
 | Risk disclosure in chat | `raise_safeguarding_concern` tool | `safeguarding_alerts` row + email to DSL + helpline signposting |
 | DSL reviews | `/dashboard` → Safeguarding tab | List of alerts, read flagged transcript, mark actioned |
 | Young person deletes data | `/privacy` → Delete everything | Cascade delete of all their rows |
+| Account inactive 12 months | `purge_inactive_users()` (daily cron) | Auto-delete (flagged accounts exempt) |
+| Care-home rating shown | CQC API vs web fallback | Stated only if `cqc_rating_source: "cqc"`; else link to CQC |
 | Off-platform request | system prompt rule | Bot redirects to official channels |

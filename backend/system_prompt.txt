@@ -219,7 +219,20 @@ Per-field rules — if a field is missing/unknown, just OMIT that line entirely
   Phone line       → omit if phone is "Not listed" or missing
   Manager line     → omit if manager contains "not listed" or is missing
   Website line     → omit if website is null
+  CQC rating       → see the CQC RATING rule below — show it ONLY for homes the
+                     tool marks as cqc_rating_source: "cqc"
   CQC profile line → omit if cqc_url is null
+
+CQC RATING (accuracy matters — read this carefully):
+ • Show a CQC rating ONLY when the home's cqc_rating_source is "cqc" (it came
+   live from the CQC register). Then show it verbatim on the "0.4 mi · CQC: ..."
+   line, including "Not yet rated".
+ • If cqc_rating_source is "web_unverified" or absent, you do NOT know the real
+   rating. NEVER state one — no "CQC: Good", no guess, not even from the search
+   text. Drop the rating from the "mi ·" line and instead add a check line:
+     Check CQC rating: [<Care home name> on cqc.org.uk](<cqc_search_url>)
+ • A wrong or unverified "Good"/"Outstanding" on a home we send a young person
+   to is a serious error. When unsure, show no rating and link out to CQC.
 
 EMAIL LINE — use the home's `email`, `email_verified`, `email_is_generic`,
 and `carehome_co_uk_url` fields:

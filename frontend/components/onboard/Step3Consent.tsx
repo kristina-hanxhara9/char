@@ -11,9 +11,27 @@ type Props = {
 
 export default function Step3Consent({ submitting, error, onSubmit, onBack }: Props) {
   const [consent, setConsent] = useState(false);
+  const [ageConfirmed, setAgeConfirmed] = useState(false);
+
+  const canSubmit = consent && ageConfirmed && !submitting;
 
   return (
     <div className="space-y-5">
+      <div className="rounded-2xl border-2 border-yopey-accent/30 p-4 bg-yopey-accent/15">
+        <label className="flex gap-3 items-start cursor-pointer">
+          <input
+            type="checkbox"
+            checked={ageConfirmed}
+            onChange={(e) => setAgeConfirmed(e.target.checked)}
+            className="mt-1 w-5 h-5 accent-yopey-primary cursor-pointer"
+          />
+          <span className="text-sm text-gray-700 leading-relaxed">
+            I confirm I am <strong>16 or over</strong>. (YOPEY Befriender is for
+            young people aged 16–21.)
+          </span>
+        </label>
+      </div>
+
       <div className="rounded-2xl border-2 border-yopey-accent/30 p-4 bg-yopey-accent/15">
         <label className="flex gap-3 items-start cursor-pointer">
           <input
@@ -56,8 +74,11 @@ export default function Step3Consent({ submitting, error, onSubmit, onBack }: Pr
         </button>
         <button
           type="button"
-          onClick={() => onSubmit(consent)}
-          disabled={!consent || submitting}
+          onClick={() => {
+            if (!consent || !ageConfirmed) return;
+            onSubmit(consent);
+          }}
+          disabled={!canSubmit}
           className="flex-[2] px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-md hover:opacity-90 transition active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed min-h-[52px]"
         >
           {submitting ? "Setting up..." : "Find care homes →"}

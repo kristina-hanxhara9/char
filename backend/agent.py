@@ -75,6 +75,12 @@ YOPEY_SAFEGUARDING_CONTACT = os.environ.get(
     "YOPEY_SAFEGUARDING_CONTACT",
     "YOPEY — email hello@yopey.org or call 01440 821654 and ask for the safeguarding lead",
 ).strip()
+# Inactive-account retention. The privacy notice promises auto-deletion after
+# 12 months of inactivity; the daily cron enforces it (purge_inactive_users).
+# Accounts that have raised a safeguarding alert are NEVER auto-purged — those
+# records are kept for the DSL to handle under YOPEY's safeguarding-records
+# policy, not silently erased by a cron.
+RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "365"))
 APP_BASE_URL = os.environ.get("APP_BASE_URL", "http://localhost:8000").rstrip("/")
 # Public URL of the FRONTEND — used to build magic-link return URLs in emails.
 FRONTEND_BASE_URL = os.environ.get(
@@ -550,6 +556,10 @@ def _fetch_cqc_care_homes(location: dict) -> list | dict:
                 "cqc_rating": detail.get("currentRatings", {})
                     .get("overall", {})
                     .get("rating", "Not yet rated"),
+                # Provenance: this rating came LIVE from the CQC register, so the
+                # bot may state it as fact. Web-fallback homes get "web_unverified"
+                # instead (see _search_care_homes_via_web) and never a stated rating.
+                "cqc_rating_source": "cqc",
                 "service_types": service_types,
                 "specialisms": specialisms,
                 "number_of_beds": detail.get("numberOfBeds", "Unknown"),
@@ -626,6 +636,16 @@ def _carehome_directory_url(name: str, postcode: str = "") -> str:
     Includes the postcode: same-named homes exist in different towns, and
     name-only queries surface the wrong one (live-testing feedback)."""
     query = f'site:carehome.co.uk "{name}" {postcode}'.strip()
+    return "https://www.google.com/search?q=" + requests.utils.quote(query)
+
+
+def _cqc_search_url(name: str, postcode: str = "") -> str:
+    """Google search restricted to cqc.org.uk for this home's CQC profile, so a
+    young person (or the coordinator) can read the REAL, current rating at
+    source. Used for web-sourced homes, whose ratings we must never assert
+    ourselves — a hallucinated "Outstanding" on a home we point a child toward
+    is exactly the error this guards against."""
+    query = f'site:cqc.org.uk "{name}" {postcode}'.strip()
     return "https://www.google.com/search?q=" + requests.utils.quote(query)
 
 
@@ -765,12 +785,22 @@ def _search_care_homes_via_web(
     for h in homes:
         h.setdefault("manager", "the Manager (not listed)")
         h.setdefault("phone", "Not listed")
-        h.setdefault("cqc_rating", "Unknown")
         h.setdefault("service_types", [])
         h.setdefault("specialisms", [])
         h.setdefault("number_of_beds", None)
         h.setdefault("last_inspection_date", None)
         h.setdefault("website", None)
+        # CQC RATING PROVENANCE. This home came from a web search, not the CQC
+        # register, so the model's `cqc_rating` is UNVERIFIED — grounded, but not
+        # confirmed against the regulator. We must never let it be rendered as
+        # fact (a wrong "Good"/"Outstanding" on a home we send a young person to
+        # is the exact error that ends a funder conversation). Keep the raw claim
+        # for the coordinator/debugging only, blank the authoritative field, and
+        # hand the bot a CQC link so the real rating can be read at source.
+        h["cqc_rating_claim"] = _inline_safe(h.get("cqc_rating"), 40) or None
+        h["cqc_rating"] = None
+        h["cqc_rating_source"] = "web_unverified"
+        h["cqc_search_url"] = _cqc_search_url(h.get("name", ""), h.get("postcode") or postcode)
         # Model-guessed CQC location URLs were nearly all 404s in live testing
         # — only the CQC API path (real locationIds) gets a profile link. The
         # bot's template omits the line when cqc_url is null.
@@ -798,7 +828,9 @@ def _normalize_postcode(postcode: str) -> str:
 # Bump when the cached payload shape/links change — old-format rows are
 # skipped and refreshed on next search. v2: postcoded directory URLs.
 # v3: CQC-primary cutover (forces web-era caches to refresh via CQC).
-SEARCH_CACHE_VERSION = 3
+# v4: CQC-rating provenance — web-fallback homes no longer carry a stated
+# rating (old v3 web rows still hold a model-asserted one), so refresh them.
+SEARCH_CACHE_VERSION = 4
 
 
 def _check_search_cache(postcode: str, radius_miles: int, max_results: int) -> Optional[dict]:
@@ -3558,11 +3590,98 @@ def precompute_search_endpoint(
     return {"status": "warming"}
 
 
+def _parse_ts(value: Optional[str]) -> Optional[datetime]:
+    """Parse a Supabase ISO timestamp to an aware datetime, tolerating a
+    trailing 'Z'. Returns None on anything unparseable."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def purge_inactive_users(retention_days: int = RETENTION_DAYS) -> int:
+    """Delete accounts with no activity for `retention_days`, making the privacy
+    notice's 12-month-inactivity promise real (UK GDPR storage-limitation /
+    Children's Code data-minimisation). 'Activity' is the most recent of: the
+    user row's updated_at/created_at, their conversation's updated_at, and their
+    latest care-home contact. Cascade deletes remove every child row.
+
+    Accounts that have ANY safeguarding alert are skipped — those are retained
+    for the DSL to handle under YOPEY's safeguarding-records policy, not silently
+    erased by a cron.
+    """
+    if not supabase:
+        return 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    cutoff_iso = cutoff.isoformat()
+    try:
+        # Cheap prefilter: only rows whose own updated_at is already past the
+        # cutoff are candidates. Confirm against conversation/contact activity
+        # before deleting, so an active chatter (whose users.updated_at can lag)
+        # is never purged.
+        candidates = (
+            supabase.table("users")
+            .select("id, created_at, updated_at")
+            .lt("updated_at", cutoff_iso)
+            .limit(500)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as e:
+        print(f"[retention] candidate lookup failed: {e}")
+        return 0
+
+    deleted = 0
+    for u in candidates:
+        uid = u["id"]
+        try:
+            # Never auto-purge an account with a safeguarding history.
+            alert = (
+                supabase.table("safeguarding_alerts")
+                .select("id").eq("user_id", uid).limit(1).execute().data
+            )
+            if alert:
+                continue
+
+            stamps = [_parse_ts(u.get("updated_at")), _parse_ts(u.get("created_at"))]
+            conv = (
+                supabase.table("conversations")
+                .select("updated_at").eq("user_id", uid).limit(1).execute().data
+            )
+            if conv:
+                stamps.append(_parse_ts(conv[0].get("updated_at")))
+            contact = (
+                supabase.table("contacts")
+                .select("contacted_at").eq("user_id", uid)
+                .order("contacted_at", desc=True).limit(1).execute().data
+            )
+            if contact:
+                stamps.append(_parse_ts(contact[0].get("contacted_at")))
+
+            latest = max((s for s in stamps if s), default=None)
+            if latest and latest >= cutoff:
+                continue  # active within the retention window after all
+
+            supabase.table("users").delete().eq("id", uid).execute()
+            deleted += 1
+        except Exception as e:
+            print(f"[retention] skip user {redact_id(uid)}: {e}")
+            continue
+
+    if deleted:
+        print(f"[retention] purged {deleted} inactive account(s) (> {retention_days} days)")
+    return deleted
+
+
 @app.post("/api/cron/daily")
 def cron_daily(x_cron_secret: str = Header(default="")):
     """
-    Fires the due reminder emails: contact nudges (3/5/7/10 days) and the
-    post-match drip. The walkers exist but nothing in-process schedules them
+    Fires the due reminder emails (contact nudges 3/5/7/10 days + the post-match
+    drip) and enforces data retention (purges accounts inactive for
+    RETENTION_DAYS). The walkers exist but nothing in-process schedules them
     — a GitHub Actions workflow (.github/workflows/daily-reminders.yml) hits
     this endpoint once a day with the shared secret.
     """
@@ -3570,8 +3689,12 @@ def cron_daily(x_cron_secret: str = Header(default="")):
         raise HTTPException(status_code=401, detail="Bad or missing x-cron-secret")
     nudges = send_nudge_reminders()
     drips = send_post_match_drip()
-    print(f"[cron] daily run: {nudges} nudges, {drips} post-match emails sent")
-    return {"nudges_sent": nudges, "post_match_sent": drips}
+    purged = purge_inactive_users()
+    print(
+        f"[cron] daily run: {nudges} nudges, {drips} post-match emails sent, "
+        f"{purged} inactive account(s) purged"
+    )
+    return {"nudges_sent": nudges, "post_match_sent": drips, "inactive_purged": purged}
 
 
 @app.get("/api/test-reminder")

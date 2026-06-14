@@ -2970,6 +2970,92 @@ FALLBACK_REPLY = (
 )
 
 
+# ============================================================
+# DETERMINISTIC SAFEGUARDING BACKSTOP
+# ============================================================
+# Escalation should not depend solely on the model choosing to call
+# raise_safeguarding_concern. This is a conservative, self-referential keyword
+# net over the YOUNG PERSON'S message: if it matches an explicit high-severity
+# disclosure and the model did NOT raise a concern that turn, we raise the alert
+# server-side AND guarantee the helpline signposting reaches them. Patterns are
+# anchored to the first person ("myself", "I'm being…") to keep false positives
+# low — a teen describing a resident ("she lost her husband to suicide") does
+# not match "kill myself" / "I want to die". Bias is deliberately toward
+# over-alerting on genuine self-disclosure; the DSL triages.
+_CRISIS_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("self_harm", re.compile(p, re.IGNORECASE)) for p in (
+        r"\bkill(?:ing)?\s+myself\b",
+        r"\bkill\s+my\s?self\b",
+        r"\bend(?:ing)?\s+my\s+(?:own\s+)?life\b",
+        r"\btake\s+my\s+own\s+life\b",
+        r"\b(?:want|going|trying)\s+to\s+die\b",
+        r"\bwish\s+I\s+(?:was|were)\s+dead\b",
+        r"\bbetter\s+off\s+dead\b",
+        r"\b(?:cut|cutting|hurt|hurting|harm|harming)\s+myself\b",
+        r"\bself[\s-]?harm",
+        r"\bsuicidal\b",
+        r"\bcommit\s+suicide\b",
+        r"\bno\s+reason\s+to\s+(?:live|go\s+on)\b",
+        r"\bdon'?t\s+want\s+to\s+(?:be\s+here|live)\b",
+        r"\boverdose(?:d|ing)?\s+(?:on\s+)?(?:my|myself)?\b",
+    )
+] + [
+    ("abuse", re.compile(p, re.IGNORECASE)) for p in (
+        r"\bI(?:'?m| am)\s+being\s+(?:abused|hit|beaten|raped|groomed)\b",
+        r"\bI\s+was\s+(?:abused|raped|assaulted|molested)\b",
+        r"\b(?:he|she|they|dad|mum|mom|stepdad|stepmum|uncle|aunt|teacher)\s+(?:hits|hit|beats|beat|touches|touched|raped|rapes|hurts|hurt)\s+me\b",
+        r"\bsexually\s+(?:abused|assaulted|touched)\b",
+    )
+] + [
+    ("danger", re.compile(p, re.IGNORECASE)) for p in (
+        r"\bI(?:'?m| am)\s+(?:not|n'?t)\s+safe\b",
+        r"\bI\s+don'?t\s+feel\s+safe\b",
+        r"\bI(?:'?m| am)\s+in\s+danger\b",
+        r"\b(?:going|threatened)\s+to\s+(?:kill|hurt)\s+me\b",
+    )
+]
+
+
+def _detect_crisis(text: str) -> Optional[str]:
+    """Return the best-fit high-severity category if the message contains an
+    explicit self-referential crisis disclosure, else None. Conservative by
+    design — only the worst cases, anchored to the first person."""
+    if not text:
+        return None
+    for category, pattern in _CRISIS_PATTERNS:
+        if pattern.search(text):
+            return category
+    return None
+
+
+# Markers that mean the reply already points to a real person/helpline, so the
+# backstop shouldn't bolt a second signpost on top.
+_SIGNPOST_MARKERS = (
+    "samaritans", "116 123", "childline", "0800 1111",
+    "the mix", "0808 808 4994", "999", "safeguarding lead",
+)
+
+
+def _has_signposting(text: str) -> bool:
+    low = (text or "").lower()
+    return any(m in low for m in _SIGNPOST_MARKERS)
+
+
+# Appended to the reply when the backstop fires and the model didn't already
+# signpost. Mirrors the system prompt's Path-1 (own-welfare) wording.
+CRISIS_SIGNPOST = (
+    "Before we go on — it sounds like something serious might be going on, and "
+    "I'm only a chatbot for finding care homes, so I'm not the right one to help "
+    "with this. Real people are, and they want to.\n\n"
+    f"Please talk to YOPEY's safeguarding lead: {YOPEY_SAFEGUARDING_CONTACT}.\n\n"
+    "You can also reach these free, confidential helplines any time:\n"
+    " - The Mix (under 25s): 0808 808 4994 - www.themix.org.uk\n"
+    " - Samaritans (24/7): 116 123\n"
+    " - Childline (under 19s): 0800 1111\n\n"
+    "If you or someone else is in immediate danger, call 999."
+)
+
+
 def _diagnose_empty_reply(response, where: str) -> None:
     """One log line explaining WHY a reply had no visible text — finish_reason
     MAX_TOKENS means thinking ate the output budget, SAFETY means filtered.
@@ -3098,6 +3184,9 @@ def chat(user_message: str, user_id: str) -> str:
     )
 
     function_calls = response.function_calls or []
+    model_raised_safeguarding = any(
+        fc.name == "raise_safeguarding_concern" for fc in function_calls
+    )
     if function_calls:
         # Reused verbatim in the follow-up — carries the thought signatures
         # Gemini 3 validates on the live turn.
@@ -3150,6 +3239,26 @@ def chat(user_message: str, user_id: str) -> str:
         if not assistant_reply:
             _diagnose_empty_reply(response, "first-call")
             assistant_reply = FALLBACK_REPLY
+
+    # Deterministic safeguarding backstop: if the young person's message carried
+    # an explicit crisis disclosure but the model didn't escalate, raise the
+    # alert ourselves and make sure they still get the signposting. Defence in
+    # depth — the human safeguarding lead is notified even on a model miss.
+    crisis_category = _detect_crisis(user_message)
+    if crisis_category and not model_raised_safeguarding:
+        try:
+            raise_safeguarding_alert(
+                user_id,
+                crisis_category,
+                "Backstop: the young person's message matched explicit crisis "
+                "language but the model did not raise a concern this turn. "
+                "Auto-escalated for review.",
+                trigger_message=user_message,
+            )
+        except Exception as e:
+            print(f"[safeguarding] backstop alert failed: {e}")
+        if not _has_signposting(assistant_reply):
+            assistant_reply = (assistant_reply.rstrip() + "\n\n" + CRISIS_SIGNPOST).strip()
 
     history.append({"role": "assistant", "content": assistant_reply})
     save_conversation(user_id, history)

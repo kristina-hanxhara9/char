@@ -24,6 +24,17 @@ tool — the young person is not told). The backend **records a
 `safeguarding_alerts` row** and **emails the safeguarding lead immediately**
 (`SAFEGUARDING_EMAIL`) via Resend.
 
+**Deterministic backstop (escalation does not rely on the model alone).**
+Because an LLM could in principle fail to call the tool, a conservative,
+self-referential keyword net (`_detect_crisis`) runs over every young person's
+message. If it matches an explicit high-severity disclosure (self-harm/suicide,
+abuse, immediate danger) and the model did **not** raise a concern that turn,
+the backend raises the alert itself **and** guarantees the helpline signposting
+is appended to the reply. Patterns are anchored to the first person to keep
+false positives low (a teen describing a resident does not trip it); the bias is
+deliberately toward over-alerting on genuine self-disclosure, which the DSL then
+triages.
+
 ### Path 1 — the young person's own welfare
 Triggers: self-harm/suicidal thoughts, abuse, being unsafe, eating disorder,
 substance abuse, severe distress/hopelessness, victim of crime, anyone in danger.
@@ -192,10 +203,17 @@ These are organisational, not software, tasks:
 5. **Register with the ICO** as a data controller (~£40/year for charities).
 6. **Set the safeguarding-record retention period** in policy (auto-purge now
    runs for ordinary accounts; flagged accounts are deliberately exempt — §5).
-7. **Decide on coordinator oversight of first outreach** — today the bot drafts
-   the introduction email and the young person sends it themselves; YOPEY's
-   coordinator enters at the acceptance/match stage. Confirm whether a coordinator
-   should review or be notified *before* a young person first contacts a home.
+
+**Coordinator oversight of first outreach — decision recorded.** YOPEY has opted
+to keep the current model: the bot drafts the introduction email and the young
+person sends it themselves, and the coordinator enters at the acceptance/match
+stage (no one visits without the coordinator marking them accepted and the DBS
+check the care home arranges). The accepted safeguards on that first email are:
+it only ever goes to **CQC-registered** homes; it carries YOPEY's **verifiable
+charity identity** (1145573 + hello@yopey.org + 01440 821654 + website); it
+commits the volunteer to a **DBS check**; and the bot **never** brokers
+private/off-platform contact (§3). Revisit this if the programme scales or the
+risk profile changes.
 
 ---
 
@@ -204,6 +222,7 @@ These are organisational, not software, tasks:
 | Trigger | Code | Result |
 |---|---|---|
 | Risk disclosure in chat | `raise_safeguarding_concern` tool | `safeguarding_alerts` row + email to DSL + helpline signposting |
+| Explicit crisis language, model missed it | `_detect_crisis` backstop | Alert raised server-side + signposting appended |
 | DSL reviews | `/dashboard` → Safeguarding tab | List of alerts, read flagged transcript, mark actioned |
 | Young person deletes data | `/privacy` → Delete everything | Cascade delete of all their rows |
 | Account inactive 12 months | `purge_inactive_users()` (daily cron) | Auto-delete (flagged accounts exempt) |

@@ -35,6 +35,21 @@ false positives low (a teen describing a resident does not trip it); the bias is
 deliberately toward over-alerting on genuine self-disclosure, which the DSL then
 triages.
 
+**Detection is never the only line of defence.** Oblique first-person ideation
+with no keywords ("I don't see the point anymore") will not always trip a
+keyword net — and no net catches everything. So crisis help is made
+**persistently available**: an always-visible "Get help" link in the chat
+(`HelpResources`) lists the 24/7 lines (Samaritans, Shout text line, Childline,
+The Mix, 999) regardless of whether anything was detected. The layers are: the
+model's own judgement → the deterministic backstop → the always-on help link.
+
+**Speed and the out-of-hours problem.** A young person may disclose at 11pm,
+long before a human can respond — so the bot's *own* reply is the immediate
+safety action: it signposts 24/7 routes there and then, and raises the DSL alert
+asynchronously. **Proposed DSL review SLA (YOPEY to confirm, recorded in
+`DPIA.md §4`):** high-severity alerts reviewed within **1 working day**;
+out-of-hours risk is held by the 24/7 lines.
+
 ### Path 1 — the young person's own welfare
 Triggers: self-harm/suicidal thoughts, abuse, being unsafe, eating disorder,
 substance abuse, severe distress/hopelessness, victim of crime, anyone in danger.
@@ -119,6 +134,13 @@ contacts the bot ever surfaces are the named helplines above.
 - **Location minimisation:** only the **postcode** is stored (the search anchor),
   never a full address. It is never shared with care homes or third parties, is
   redacted in logs (outward code only), and is deleted with the account.
+- **A child's contact details aren't broadcast:** the drafted introduction email
+  is signed with the young person's **name only** — no email, phone, age or
+  postcode in the body. The care home verifies YOPEY and replies via YOPEY's
+  central contact, so a minor's personal details aren't handed to an institution
+  that hasn't been vetted at that moment. (Going further — a YOPEY-controlled
+  reply relay so the care home never sees the young person's address even on a
+  self-sent email — is a documented future option.)
 - **Explicit consent:** the onboarding wizard requires an explicit, unticked-by-
   default consent checkbox before any data is stored.
 - **No model training:** chat runs on Google's Gemini API under a paid
@@ -144,11 +166,27 @@ conversation, and their care-home contacts — is older than the window. Cascade
 deletes remove every child row. On-demand deletion is also available any time
 via `/privacy` and the dashboard.
 
-**Safeguarding-records exception:** accounts that have raised a
-`safeguarding_alerts` row are **never** auto-purged. Those records are retained
-for the DSL to handle under YOPEY's safeguarding-records policy rather than being
-silently erased by a cron. **Action for YOPEY:** set the safeguarding-record
-retention period in policy and review flagged accounts accordingly.
+**Safeguarding records — retained, but not forever.** Accounts with a
+`safeguarding_alerts` row are exempt from the *ordinary* inactivity purge — but
+"exempt" must not mean "kept indefinitely" (that is its own GDPR problem). They
+are governed by a separate, defined window:
+
+- **Retention period:** `SAFEGUARDING_RETENTION_DAYS`. While it is unset (`0`,
+  the default), flagged accounts are kept for human review and **never** deleted
+  by the cron. Once YOPEY sets it to the agreed safeguarding-record period, the
+  cron deletes a flagged account only when it is inactive, **all** its alerts are
+  resolved, **and** the newest alert is older than that window
+  (`_safeguarding_blocks_purge`). Open (unresolved) alerts always block deletion.
+- **Lawful basis:** retaining these records relies on UK GDPR Art 6(1)(f)/(d)
+  and, for the special-category content, Art 9(2)(b)/(g) with the DPA 2018 Sch 1
+  safeguarding condition — not consent, since protecting a child can't depend on
+  it.
+- **Access:** restricted to the **DSL** via the password-gated dashboard;
+  transcripts are readable only where a safeguarding flag exists (§2).
+
+**Action for YOPEY:** agree the safeguarding-record retention period (often tied
+to the young person reaching a set age, or a fixed number of years for serious
+cases) and set `SAFEGUARDING_RETENTION_DAYS` accordingly.
 
 ---
 
@@ -198,11 +236,15 @@ These are organisational, not software, tasks:
    police if needed) — the software raises the flag; the human process handles it.
 3. **Sign Data Processing Agreements** with Google (Gemini API), Supabase,
    Resend, Vercel, Render.
-4. **Complete a DPIA** (the ICO requires one for processing children's data) —
-   this document plus the privacy notice provide most of the content.
+4. **Review and sign off the DPIA.** A draft is provided in `DPIA.md` (UK GDPR
+   Art 35 effectively requires one for children's data) — it needs trustee + DSL
+   sign-off, plus YOPEY's decisions on the SLA and retention period filled in.
 5. **Register with the ICO** as a data controller (~£40/year for charities).
-6. **Set the safeguarding-record retention period** in policy (auto-purge now
-   runs for ordinary accounts; flagged accounts are deliberately exempt — §5).
+6. **Set the safeguarding-record retention period:** agree the period and set
+   `SAFEGUARDING_RETENTION_DAYS` (ordinary accounts already auto-purge; flagged
+   accounts are governed by this window once set — §5).
+7. **Confirm the safeguarding review SLA** (`DPIA.md §4`) — the proposed default
+   is review of high-severity alerts within 1 working day.
 
 **Coordinator oversight of first outreach — decision recorded.** YOPEY has opted
 to keep the current model: the bot drafts the introduction email and the young
@@ -223,8 +265,11 @@ risk profile changes.
 |---|---|---|
 | Risk disclosure in chat | `raise_safeguarding_concern` tool | `safeguarding_alerts` row + email to DSL + helpline signposting |
 | Explicit crisis language, model missed it | `_detect_crisis` backstop | Alert raised server-side + signposting appended |
+| Help available at any time (no detection needed) | `HelpResources` (chat footer) | Always-visible 24/7 helplines + YOPEY contact |
 | DSL reviews | `/dashboard` → Safeguarding tab | List of alerts, read flagged transcript, mark actioned |
 | Young person deletes data | `/privacy` → Delete everything | Cascade delete of all their rows |
-| Account inactive 12 months | `purge_inactive_users()` (daily cron) | Auto-delete (flagged accounts exempt) |
+| Account inactive 12 months | `purge_inactive_users()` (daily cron) | Auto-delete (flagged accounts governed by §5) |
+| Flagged-account retention | `SAFEGUARDING_RETENTION_DAYS` | Kept for review; deleted only when resolved + window elapsed |
+| Care-home email drafted | system prompt STEP 3 | Signed with name only — no child email/phone in the body |
 | Care-home rating shown | CQC API vs web fallback | Stated only if `cqc_rating_source: "cqc"`; else link to CQC |
 | Off-platform request | system prompt rule | Bot redirects to official channels |

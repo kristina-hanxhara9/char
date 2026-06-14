@@ -81,6 +81,16 @@ YOPEY_SAFEGUARDING_CONTACT = os.environ.get(
 # records are kept for the DSL to handle under YOPEY's safeguarding-records
 # policy, not silently erased by a cron.
 RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "365"))
+# Safeguarding-record retention. Flagged accounts are exempt from the ordinary
+# inactivity purge — but "exempt" must not mean "kept forever" (that is its own
+# GDPR problem). Set this to YOPEY's agreed safeguarding-record retention period
+# (in days) and the cron will delete a flagged account once it is inactive, ALL
+# its alerts are resolved, AND the newest alert is older than this window. Left
+# at 0 (default), flagged accounts are kept until a human deletes them — no
+# automated deletion of safeguarding records. Lawful basis for retaining these:
+# UK GDPR Art 6(1)(f) + Art 9(2)(b)/(g) (safeguarding of children/at-risk adults,
+# DPA 2018 Sch 1). Access is restricted to the DSL via the gated dashboard.
+SAFEGUARDING_RETENTION_DAYS = int(os.environ.get("SAFEGUARDING_RETENTION_DAYS", "0"))
 APP_BASE_URL = os.environ.get("APP_BASE_URL", "http://localhost:8000").rstrip("/")
 # Public URL of the FRONTEND — used to build magic-link return URLs in emails.
 FRONTEND_BASE_URL = os.environ.get(
@@ -3032,7 +3042,7 @@ def _detect_crisis(text: str) -> Optional[str]:
 # backstop shouldn't bolt a second signpost on top.
 _SIGNPOST_MARKERS = (
     "samaritans", "116 123", "childline", "0800 1111",
-    "the mix", "0808 808 4994", "999", "safeguarding lead",
+    "the mix", "0808 808 4994", "shout", "85258", "999", "safeguarding lead",
 )
 
 
@@ -3051,6 +3061,7 @@ CRISIS_SIGNPOST = (
     "You can also reach these free, confidential helplines any time:\n"
     " - The Mix (under 25s): 0808 808 4994 - www.themix.org.uk\n"
     " - Samaritans (24/7): 116 123\n"
+    " - Shout (24/7 crisis text line): text SHOUT to 85258\n"
     " - Childline (under 19s): 0800 1111\n\n"
     "If you or someone else is in immediate danger, call 999."
 )
@@ -3710,6 +3721,42 @@ def _parse_ts(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def _safeguarding_blocks_purge(user_id: str) -> bool:
+    """True if a user's safeguarding records mean their account must NOT be
+    auto-purged yet. Flagged accounts are exempt from the ordinary inactivity
+    purge; they only become purgeable once SAFEGUARDING_RETENTION_DAYS is set,
+    every alert is resolved, AND the newest alert is older than that window. Any
+    open (unresolved) alert always blocks. Fails safe (blocks) if we can't tell."""
+    if not supabase:
+        return True
+    try:
+        alerts = (
+            supabase.table("safeguarding_alerts")
+            .select("resolved, created_at")
+            .eq("user_id", user_id)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return True  # fail safe: if the lookup fails, never auto-delete
+    if not alerts:
+        return False  # no safeguarding history — ordinary inactivity rules apply
+    # Policy not configured → keep flagged accounts for human review.
+    if SAFEGUARDING_RETENTION_DAYS <= 0:
+        return True
+    # Any unresolved alert blocks deletion outright.
+    if any(not a.get("resolved") for a in alerts):
+        return True
+    sg_cutoff = datetime.now(timezone.utc) - timedelta(days=SAFEGUARDING_RETENTION_DAYS)
+    newest = max(
+        (_parse_ts(a.get("created_at")) for a in alerts if a.get("created_at")),
+        default=None,
+    )
+    # Keep until the retention window has fully elapsed since the latest alert.
+    return not (newest and newest < sg_cutoff)
+
+
 def purge_inactive_users(retention_days: int = RETENTION_DAYS) -> int:
     """Delete accounts with no activity for `retention_days`, making the privacy
     notice's 12-month-inactivity promise real (UK GDPR storage-limitation /
@@ -3747,12 +3794,10 @@ def purge_inactive_users(retention_days: int = RETENTION_DAYS) -> int:
     for u in candidates:
         uid = u["id"]
         try:
-            # Never auto-purge an account with a safeguarding history.
-            alert = (
-                supabase.table("safeguarding_alerts")
-                .select("id").eq("user_id", uid).limit(1).execute().data
-            )
-            if alert:
+            # Safeguarding records gate deletion (see _safeguarding_blocks_purge):
+            # open alerts and unconfigured retention keep the account; configured,
+            # resolved, time-elapsed records become purgeable.
+            if _safeguarding_blocks_purge(uid):
                 continue
 
             stamps = [_parse_ts(u.get("updated_at")), _parse_ts(u.get("created_at"))]

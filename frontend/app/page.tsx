@@ -1,6 +1,6 @@
 import Link from "next/link";
 import ReturningUserCta from "@/components/ReturningUserCta";
-import WidgetMount from "@/components/WidgetMount";
+import ChatWidget from "@/components/ChatWidget";
 
 export default function LandingPage() {
   return (
@@ -108,10 +108,10 @@ export default function LandingPage() {
         </div>
       </footer>
 
-      {/* The embeddable chat bubble, shown here so we can preview it on the
-          live site. It opens the onboarding/chat flow in an iframe; the loader
-          skips itself inside that frame, so there's no widget-in-widget. */}
-      <WidgetMount />
+      {/* Chat-widget bubble, rendered natively so it always appears on the
+          live site. It opens the onboarding/chat flow in an iframe. (Third
+          parties embed the same flow via public/widget.js instead.) */}
+      <ChatWidget />
     </main>
   );
 }

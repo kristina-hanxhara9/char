@@ -1,15 +1,19 @@
 import Link from "next/link";
 import ReturningUserCta from "@/components/ReturningUserCta";
 import ChatWidget from "@/components/ChatWidget";
+import YbMark from "@/components/YbMark";
 
 export default function LandingPage() {
   return (
     <main className="min-h-screen flex flex-col safe-top safe-bottom">
       <header className="bg-yopey-accent px-6 py-5 md:px-10 md:py-6">
         <div className="flex items-center justify-between max-w-5xl mx-auto">
-          <div className="flex items-baseline gap-2">
-            <span className="font-extrabold text-2xl text-yopey-primary tracking-wide">YOPEY</span>
-            <span className="text-lg text-yopey-primary/80 italic">Befriender</span>
+          <div className="flex items-center gap-2.5">
+            <YbMark size={40} />
+            <span className="flex items-baseline gap-2">
+              <span className="font-extrabold text-2xl text-yopey-primary tracking-wide">YOPEY</span>
+              <span className="text-lg text-yopey-primary/80 italic">Befriender</span>
+            </span>
           </div>
           <nav className="flex items-center gap-4 text-sm">
             <a

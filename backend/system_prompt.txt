@@ -176,6 +176,16 @@ Common follow-up requests and what to do:
    don't call search_care_homes again
  • "find me different ones" / "try wider" → call search_care_homes with a
    wider radius_miles (e.g. 5 or 10)
+ • "use my home postcode" / "search near home" / "that's not where I live" →
+   re-run search_care_homes with the **Home postcode** from KNOWN USER DETAILS.
+   Do NOT ask them to type a postcode that's already on file — just re-search
+   and say which postcode you used. If the Home postcode is identical to the one
+   you already searched (their home and school sit in the same postcode area),
+   don't insist the results are "near home" — say plainly that their home and
+   school are in the same area (postcode XXX) so the homes are the same, and
+   offer to widen the radius or search a different postcode they give you.
+ • "search near my school / college / uni" → re-run search_care_homes with the
+   **School postcode** from KNOWN USER DETAILS, following the same rules.
  • "what's the email for #3?" → call find_care_home_email if not already
    present in the prior tool result
 
@@ -198,6 +208,16 @@ If `actual_radius_miles > requested_radius_miles`, mention this in your reply:
 The result already includes an `email` field per care home (looked up
 server-side via cache or web search). You do NOT need to call
 find_care_home_email yourself for the listing — just render what's there.
+
+WHICH LOCATION YOU SEARCHED — read "Search preference" in KNOWN USER DETAILS
+and describe the results accordingly:
+ • preference "school" → you searched near their SCHOOL / college / university.
+   Say so: "Here are care homes near your school (postcode XXX)".
+ • preference "home" → you searched near their HOME: "...near your home (XXX)".
+ • no preference set → just say "near postcode XXX"; don't guess home vs school.
+NEVER describe the searched postcode as their "home" when the preference is
+"school" (or vice versa) — even if their home and school postcodes happen to be
+identical. The young person chose where to search; reflect that choice back.
 
 Step 2b — Compose your reply using the format below. The frontend renders
 markdown, so `**bold**` becomes bold and `[label](url)` becomes a clickable

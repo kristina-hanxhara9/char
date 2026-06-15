@@ -5,6 +5,11 @@ export const metadata: Metadata = {
   title: "YOPEY Befriender — find a care home near you",
   description:
     "YOPEY connects young people (16+) with elderly care home residents. Chat with our AI to find a care home near you and start volunteering.",
+  icons: {
+    icon: "/icon.svg",
+    shortcut: "/icon.svg",
+    apple: "/icon.svg",
+  },
 };
 
 export const viewport: Viewport = {

@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
-import { requestReturnLink } from "@/lib/api";
+import { pingBackend, requestReturnLink } from "@/lib/api";
 import { userStorage, type StoredUser } from "@/lib/storage";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -21,6 +21,10 @@ export default function ReturningUserCta() {
   useEffect(() => {
     setUser(userStorage.get());
     setMounted(true);
+    // Wake Render's free-tier instance as soon as the homepage loads, so the
+    // magic-link request (and any onboarding that follows) hits a warm server
+    // instead of a ~1-min cold start that looks like the button hanging.
+    pingBackend();
   }, []);
 
   async function handleEmail(e: FormEvent) {

@@ -3161,7 +3161,10 @@ def chat(user_message: str, user_id: str) -> str:
         + f"Age: {user.get('age')}\n"
         + (f"Surname: {_inline_safe(user.get('surname'), 50)}\n" if user.get("surname") else "")
         + (f"Email: {_inline_safe(user.get('email'), 120)}\n" if user.get("email") else "")
-        + (f"Postcode: {_inline_safe(user.get('postcode'), 12)}\n" if user.get("postcode") else "")
+        + (f"Search postcode (used for the CURRENT search): {_inline_safe(user.get('postcode'), 12)}\n" if user.get("postcode") else "")
+        + (f"Home postcode: {_inline_safe(user.get('home_postcode'), 12)}\n" if user.get("home_postcode") else "")
+        + (f"School postcode: {_inline_safe(user.get('school_postcode'), 12)}\n" if user.get("school_postcode") else "")
+        + (f"Search preference: {_inline_safe(user.get('search_preference'), 12)}\n" if user.get("search_preference") else "")
         + _build_contacts_context(user_id)
     )
 
@@ -3920,7 +3923,7 @@ RETURN_TOKEN_TTL_MINUTES = 30
 
 @app.post("/api/request-return-link")
 @limiter.limit("5/minute")
-def request_return_link(req: ReturnLinkRequest, request: Request):
+def request_return_link(req: ReturnLinkRequest, request: Request, background_tasks: BackgroundTasks):
     """
     Email an already-onboarded user a one-click link back into their session.
     Always returns the same generic response so an attacker can't use this to
@@ -3948,11 +3951,19 @@ def request_return_link(req: ReturnLinkRequest, request: Request):
             "this account. If you didn't ask for it, you can ignore this email.\n\n"
             "— YOPEY"
         )
-        if send_email(email, subject, body):
-            print(f"[return] link emailed to {redact_email(email)}")
-        else:
-            # Resend not configured — log the link so dev/testing still works.
-            print(f"[return] (email not sent) link for {redact_email(email)}: {link}")
+        # Send in the background so the endpoint returns immediately. Calling
+        # Resend synchronously here — especially on a cold-started Render
+        # instance — makes the frontend's "Sending..." button look hung for up
+        # to a minute. The user sees the generic "check your inbox" state at once;
+        # the email goes out a beat later.
+        def _send_return_link() -> None:
+            if send_email(email, subject, body):
+                print(f"[return] link emailed to {redact_email(email)}")
+            else:
+                # Resend not configured — log the link so dev/testing still works.
+                print(f"[return] (email not sent) link for {redact_email(email)}: {link}")
+
+        background_tasks.add_task(_send_return_link)
     else:
         # No account for this address — nothing is sent (anti-enumeration). Logged
         # so "my return email never arrived" is diagnosable: this line means the

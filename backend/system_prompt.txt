@@ -176,6 +176,12 @@ Common follow-up requests and what to do:
    don't call search_care_homes again
  • "find me different ones" / "try wider" → call search_care_homes with a
    wider radius_miles (e.g. 5 or 10)
+ • "use my home postcode" / "search near home" / "that's not where I live" →
+   call search_care_homes with the **Home postcode** from KNOWN USER DETAILS.
+   Do NOT ask them to type a postcode that's already on file — just re-search
+   and say which postcode you used.
+ • "search near my school / college / uni" → call search_care_homes with the
+   **School postcode** from KNOWN USER DETAILS.
  • "what's the email for #3?" → call find_care_home_email if not already
    present in the prior tool result
 

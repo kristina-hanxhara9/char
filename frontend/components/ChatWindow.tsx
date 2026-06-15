@@ -7,6 +7,7 @@ import MessageBubble from "@/components/MessageBubble";
 import TypingIndicator from "@/components/TypingIndicator";
 import ChatInput from "@/components/ChatInput";
 import HelpResources from "@/components/HelpResources";
+import YbMark from "@/components/YbMark";
 import { consumeInitialChat, fetchUser, sendMessage } from "@/lib/api";
 import { userStorage, type StoredUser } from "@/lib/storage";
 import { useIsEmbedded } from "@/lib/embed";
@@ -247,9 +248,12 @@ export default function ChatWindow() {
       {!embedded && (
         <header className="shrink-0 bg-yopey-accent px-4 md:px-6 py-3 safe-top">
           <div className="flex items-center justify-between max-w-3xl mx-auto">
-            <Link href="/" className="flex items-baseline gap-1.5">
-              <span className="font-extrabold text-lg text-yopey-primary tracking-wide">YOPEY</span>
-              <span className="text-base text-yopey-primary/80 italic">Befriender</span>
+            <Link href="/" className="flex items-center gap-2">
+              <YbMark size={30} />
+              <span className="flex items-baseline gap-1.5">
+                <span className="font-extrabold text-lg text-yopey-primary tracking-wide">YOPEY</span>
+                <span className="text-base text-yopey-primary/80 italic">Befriender</span>
+              </span>
             </Link>
             <div className="flex items-center gap-1">
               <Link

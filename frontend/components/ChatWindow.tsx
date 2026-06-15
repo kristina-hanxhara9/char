@@ -6,6 +6,7 @@ import Link from "next/link";
 import MessageBubble from "@/components/MessageBubble";
 import TypingIndicator from "@/components/TypingIndicator";
 import ChatInput from "@/components/ChatInput";
+import HelpResources from "@/components/HelpResources";
 import { consumeInitialChat, fetchUser, sendMessage } from "@/lib/api";
 import { userStorage, type StoredUser } from "@/lib/storage";
 import { useIsEmbedded } from "@/lib/embed";
@@ -282,6 +283,7 @@ export default function ChatWindow() {
             onSend={handleSend}
             disabled={pending}
           />
+          <HelpResources />
           <p className="text-[11px] text-gray-400 text-center mt-2 px-2">
             Need to change something? Just tell me — e.g.{" "}
             <em>&quot;use my home postcode instead&quot;</em>.

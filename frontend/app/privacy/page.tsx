@@ -130,15 +130,31 @@ export default function PrivacyPage() {
         </ul>
         <p className="text-gray-700">
           We <strong>do not</strong> sell, share, or rent your data to anyone else.
-          Care homes you contact will obviously see the email you send them — but
-          that&apos;s you sending it, not us.
+          Care homes you contact will see the email you send them — but that&apos;s
+          you sending it, not us, and the draft we prepare is signed with your{" "}
+          <strong>name only</strong>: we don&apos;t put your email, phone, age or
+          postcode in it. A care home can reach you back through YOPEY.
         </p>
 
         <h2 className="text-xl font-bold mt-8 mb-2">How long we keep it</h2>
         <p className="text-gray-700">
           We keep your data while your account is active. If you haven&apos;t used
-          YOPEY Befriender for <strong>12 months</strong>, we&apos;ll automatically
-          delete your data. You can also delete it any time — see below.
+          YOPEY Befriender for <strong>12 months</strong>, our system automatically
+          deletes your account and everything attached to it — name, postcode, chat
+          history, the lot. You can also delete it yourself any time — see below.
+        </p>
+        <p className="text-gray-700">
+          One exception: if you ever told the bot something that raised a{" "}
+          <strong>safeguarding concern</strong>, we keep that record so our
+          safeguarding lead can handle it properly — even if the rest of your
+          account is deleted. We don&apos;t keep it forever, only for the period
+          set in our safeguarding policy, and only our safeguarding lead can see
+          it.
+        </p>
+        <p className="text-gray-700">
+          On location: we only ever store your <strong>postcode</strong> (so we can
+          find care homes near you), never your full address. We don&apos;t share it
+          with care homes or anyone else, and it&apos;s deleted when your account is.
         </p>
 
         <h2 className="text-xl font-bold mt-8 mb-2">Your rights</h2>

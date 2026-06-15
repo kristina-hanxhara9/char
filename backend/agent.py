@@ -75,6 +75,22 @@ YOPEY_SAFEGUARDING_CONTACT = os.environ.get(
     "YOPEY_SAFEGUARDING_CONTACT",
     "YOPEY — email hello@yopey.org or call 01440 821654 and ask for the safeguarding lead",
 ).strip()
+# Inactive-account retention. The privacy notice promises auto-deletion after
+# 12 months of inactivity; the daily cron enforces it (purge_inactive_users).
+# Accounts that have raised a safeguarding alert are NEVER auto-purged — those
+# records are kept for the DSL to handle under YOPEY's safeguarding-records
+# policy, not silently erased by a cron.
+RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "365"))
+# Safeguarding-record retention. Flagged accounts are exempt from the ordinary
+# inactivity purge — but "exempt" must not mean "kept forever" (that is its own
+# GDPR problem). Set this to YOPEY's agreed safeguarding-record retention period
+# (in days) and the cron will delete a flagged account once it is inactive, ALL
+# its alerts are resolved, AND the newest alert is older than this window. Left
+# at 0 (default), flagged accounts are kept until a human deletes them — no
+# automated deletion of safeguarding records. Lawful basis for retaining these:
+# UK GDPR Art 6(1)(f) + Art 9(2)(b)/(g) (safeguarding of children/at-risk adults,
+# DPA 2018 Sch 1). Access is restricted to the DSL via the gated dashboard.
+SAFEGUARDING_RETENTION_DAYS = int(os.environ.get("SAFEGUARDING_RETENTION_DAYS", "0"))
 APP_BASE_URL = os.environ.get("APP_BASE_URL", "http://localhost:8000").rstrip("/")
 # Public URL of the FRONTEND — used to build magic-link return URLs in emails.
 FRONTEND_BASE_URL = os.environ.get(
@@ -550,6 +566,10 @@ def _fetch_cqc_care_homes(location: dict) -> list | dict:
                 "cqc_rating": detail.get("currentRatings", {})
                     .get("overall", {})
                     .get("rating", "Not yet rated"),
+                # Provenance: this rating came LIVE from the CQC register, so the
+                # bot may state it as fact. Web-fallback homes get "web_unverified"
+                # instead (see _search_care_homes_via_web) and never a stated rating.
+                "cqc_rating_source": "cqc",
                 "service_types": service_types,
                 "specialisms": specialisms,
                 "number_of_beds": detail.get("numberOfBeds", "Unknown"),
@@ -626,6 +646,16 @@ def _carehome_directory_url(name: str, postcode: str = "") -> str:
     Includes the postcode: same-named homes exist in different towns, and
     name-only queries surface the wrong one (live-testing feedback)."""
     query = f'site:carehome.co.uk "{name}" {postcode}'.strip()
+    return "https://www.google.com/search?q=" + requests.utils.quote(query)
+
+
+def _cqc_search_url(name: str, postcode: str = "") -> str:
+    """Google search restricted to cqc.org.uk for this home's CQC profile, so a
+    young person (or the coordinator) can read the REAL, current rating at
+    source. Used for web-sourced homes, whose ratings we must never assert
+    ourselves — a hallucinated "Outstanding" on a home we point a child toward
+    is exactly the error this guards against."""
+    query = f'site:cqc.org.uk "{name}" {postcode}'.strip()
     return "https://www.google.com/search?q=" + requests.utils.quote(query)
 
 
@@ -765,12 +795,22 @@ def _search_care_homes_via_web(
     for h in homes:
         h.setdefault("manager", "the Manager (not listed)")
         h.setdefault("phone", "Not listed")
-        h.setdefault("cqc_rating", "Unknown")
         h.setdefault("service_types", [])
         h.setdefault("specialisms", [])
         h.setdefault("number_of_beds", None)
         h.setdefault("last_inspection_date", None)
         h.setdefault("website", None)
+        # CQC RATING PROVENANCE. This home came from a web search, not the CQC
+        # register, so the model's `cqc_rating` is UNVERIFIED — grounded, but not
+        # confirmed against the regulator. We must never let it be rendered as
+        # fact (a wrong "Good"/"Outstanding" on a home we send a young person to
+        # is the exact error that ends a funder conversation). Keep the raw claim
+        # for the coordinator/debugging only, blank the authoritative field, and
+        # hand the bot a CQC link so the real rating can be read at source.
+        h["cqc_rating_claim"] = _inline_safe(h.get("cqc_rating"), 40) or None
+        h["cqc_rating"] = None
+        h["cqc_rating_source"] = "web_unverified"
+        h["cqc_search_url"] = _cqc_search_url(h.get("name", ""), h.get("postcode") or postcode)
         # Model-guessed CQC location URLs were nearly all 404s in live testing
         # — only the CQC API path (real locationIds) gets a profile link. The
         # bot's template omits the line when cqc_url is null.
@@ -798,7 +838,9 @@ def _normalize_postcode(postcode: str) -> str:
 # Bump when the cached payload shape/links change — old-format rows are
 # skipped and refreshed on next search. v2: postcoded directory URLs.
 # v3: CQC-primary cutover (forces web-era caches to refresh via CQC).
-SEARCH_CACHE_VERSION = 3
+# v4: CQC-rating provenance — web-fallback homes no longer carry a stated
+# rating (old v3 web rows still hold a model-asserted one), so refresh them.
+SEARCH_CACHE_VERSION = 4
 
 
 def _check_search_cache(postcode: str, radius_miles: int, max_results: int) -> Optional[dict]:
@@ -2938,6 +2980,93 @@ FALLBACK_REPLY = (
 )
 
 
+# ============================================================
+# DETERMINISTIC SAFEGUARDING BACKSTOP
+# ============================================================
+# Escalation should not depend solely on the model choosing to call
+# raise_safeguarding_concern. This is a conservative, self-referential keyword
+# net over the YOUNG PERSON'S message: if it matches an explicit high-severity
+# disclosure and the model did NOT raise a concern that turn, we raise the alert
+# server-side AND guarantee the helpline signposting reaches them. Patterns are
+# anchored to the first person ("myself", "I'm being…") to keep false positives
+# low — a teen describing a resident ("she lost her husband to suicide") does
+# not match "kill myself" / "I want to die". Bias is deliberately toward
+# over-alerting on genuine self-disclosure; the DSL triages.
+_CRISIS_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("self_harm", re.compile(p, re.IGNORECASE)) for p in (
+        r"\bkill(?:ing)?\s+myself\b",
+        r"\bkill\s+my\s?self\b",
+        r"\bend(?:ing)?\s+my\s+(?:own\s+)?life\b",
+        r"\btake\s+my\s+own\s+life\b",
+        r"\b(?:want|going|trying)\s+to\s+die\b",
+        r"\bwish\s+I\s+(?:was|were)\s+dead\b",
+        r"\bbetter\s+off\s+dead\b",
+        r"\b(?:cut|cutting|hurt|hurting|harm|harming)\s+myself\b",
+        r"\bself[\s-]?harm",
+        r"\bsuicidal\b",
+        r"\bcommit\s+suicide\b",
+        r"\bno\s+reason\s+to\s+(?:live|go\s+on)\b",
+        r"\bdon'?t\s+want\s+to\s+(?:be\s+here|live)\b",
+        r"\boverdose(?:d|ing)?\s+(?:on\s+)?(?:my|myself)?\b",
+    )
+] + [
+    ("abuse", re.compile(p, re.IGNORECASE)) for p in (
+        r"\bI(?:'?m| am)\s+being\s+(?:abused|hit|beaten|raped|groomed)\b",
+        r"\bI\s+was\s+(?:abused|raped|assaulted|molested)\b",
+        r"\b(?:he|she|they|dad|mum|mom|stepdad|stepmum|uncle|aunt|teacher)\s+(?:hits|hit|beats|beat|touches|touched|raped|rapes|hurts|hurt)\s+me\b",
+        r"\bsexually\s+(?:abused|assaulted|touched)\b",
+    )
+] + [
+    ("danger", re.compile(p, re.IGNORECASE)) for p in (
+        r"\bI(?:'?m| am)\s+(?:not|n'?t)\s+safe\b",
+        r"\bI\s+don'?t\s+feel\s+safe\b",
+        r"\bI(?:'?m| am)\s+in\s+danger\b",
+        r"\b(?:going|threatened)\s+to\s+(?:kill|hurt)\s+me\b",
+    )
+]
+
+
+def _detect_crisis(text: str) -> Optional[str]:
+    """Return the best-fit high-severity category if the message contains an
+    explicit self-referential crisis disclosure, else None. Conservative by
+    design — only the worst cases, anchored to the first person."""
+    if not text:
+        return None
+    for category, pattern in _CRISIS_PATTERNS:
+        if pattern.search(text):
+            return category
+    return None
+
+
+# Markers that mean the reply already points to a real person/helpline, so the
+# backstop shouldn't bolt a second signpost on top.
+_SIGNPOST_MARKERS = (
+    "samaritans", "116 123", "childline", "0800 1111",
+    "the mix", "0808 808 4994", "shout", "85258", "999", "safeguarding lead",
+)
+
+
+def _has_signposting(text: str) -> bool:
+    low = (text or "").lower()
+    return any(m in low for m in _SIGNPOST_MARKERS)
+
+
+# Appended to the reply when the backstop fires and the model didn't already
+# signpost. Mirrors the system prompt's Path-1 (own-welfare) wording.
+CRISIS_SIGNPOST = (
+    "Before we go on — it sounds like something serious might be going on, and "
+    "I'm only a chatbot for finding care homes, so I'm not the right one to help "
+    "with this. Real people are, and they want to.\n\n"
+    f"Please talk to YOPEY's safeguarding lead: {YOPEY_SAFEGUARDING_CONTACT}.\n\n"
+    "You can also reach these free, confidential helplines any time:\n"
+    " - The Mix (under 25s): 0808 808 4994 - www.themix.org.uk\n"
+    " - Samaritans (24/7): 116 123\n"
+    " - Shout (24/7 crisis text line): text SHOUT to 85258\n"
+    " - Childline (under 19s): 0800 1111\n\n"
+    "If you or someone else is in immediate danger, call 999."
+)
+
+
 def _diagnose_empty_reply(response, where: str) -> None:
     """One log line explaining WHY a reply had no visible text — finish_reason
     MAX_TOKENS means thinking ate the output budget, SAFETY means filtered.
@@ -3066,6 +3195,9 @@ def chat(user_message: str, user_id: str) -> str:
     )
 
     function_calls = response.function_calls or []
+    model_raised_safeguarding = any(
+        fc.name == "raise_safeguarding_concern" for fc in function_calls
+    )
     if function_calls:
         # Reused verbatim in the follow-up — carries the thought signatures
         # Gemini 3 validates on the live turn.
@@ -3118,6 +3250,26 @@ def chat(user_message: str, user_id: str) -> str:
         if not assistant_reply:
             _diagnose_empty_reply(response, "first-call")
             assistant_reply = FALLBACK_REPLY
+
+    # Deterministic safeguarding backstop: if the young person's message carried
+    # an explicit crisis disclosure but the model didn't escalate, raise the
+    # alert ourselves and make sure they still get the signposting. Defence in
+    # depth — the human safeguarding lead is notified even on a model miss.
+    crisis_category = _detect_crisis(user_message)
+    if crisis_category and not model_raised_safeguarding:
+        try:
+            raise_safeguarding_alert(
+                user_id,
+                crisis_category,
+                "Backstop: the young person's message matched explicit crisis "
+                "language but the model did not raise a concern this turn. "
+                "Auto-escalated for review.",
+                trigger_message=user_message,
+            )
+        except Exception as e:
+            print(f"[safeguarding] backstop alert failed: {e}")
+        if not _has_signposting(assistant_reply):
+            assistant_reply = (assistant_reply.rstrip() + "\n\n" + CRISIS_SIGNPOST).strip()
 
     history.append({"role": "assistant", "content": assistant_reply})
     save_conversation(user_id, history)
@@ -3558,11 +3710,132 @@ def precompute_search_endpoint(
     return {"status": "warming"}
 
 
+def _parse_ts(value: Optional[str]) -> Optional[datetime]:
+    """Parse a Supabase ISO timestamp to an aware datetime, tolerating a
+    trailing 'Z'. Returns None on anything unparseable."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _safeguarding_blocks_purge(user_id: str) -> bool:
+    """True if a user's safeguarding records mean their account must NOT be
+    auto-purged yet. Flagged accounts are exempt from the ordinary inactivity
+    purge; they only become purgeable once SAFEGUARDING_RETENTION_DAYS is set,
+    every alert is resolved, AND the newest alert is older than that window. Any
+    open (unresolved) alert always blocks. Fails safe (blocks) if we can't tell."""
+    if not supabase:
+        return True
+    try:
+        alerts = (
+            supabase.table("safeguarding_alerts")
+            .select("resolved, created_at")
+            .eq("user_id", user_id)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return True  # fail safe: if the lookup fails, never auto-delete
+    if not alerts:
+        return False  # no safeguarding history — ordinary inactivity rules apply
+    # Policy not configured → keep flagged accounts for human review.
+    if SAFEGUARDING_RETENTION_DAYS <= 0:
+        return True
+    # Any unresolved alert blocks deletion outright.
+    if any(not a.get("resolved") for a in alerts):
+        return True
+    sg_cutoff = datetime.now(timezone.utc) - timedelta(days=SAFEGUARDING_RETENTION_DAYS)
+    newest = max(
+        (_parse_ts(a.get("created_at")) for a in alerts if a.get("created_at")),
+        default=None,
+    )
+    # Keep until the retention window has fully elapsed since the latest alert.
+    return not (newest and newest < sg_cutoff)
+
+
+def purge_inactive_users(retention_days: int = RETENTION_DAYS) -> int:
+    """Delete accounts with no activity for `retention_days`, making the privacy
+    notice's 12-month-inactivity promise real (UK GDPR storage-limitation /
+    Children's Code data-minimisation). 'Activity' is the most recent of: the
+    user row's updated_at/created_at, their conversation's updated_at, and their
+    latest care-home contact. Cascade deletes remove every child row.
+
+    Accounts that have ANY safeguarding alert are skipped — those are retained
+    for the DSL to handle under YOPEY's safeguarding-records policy, not silently
+    erased by a cron.
+    """
+    if not supabase:
+        return 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    cutoff_iso = cutoff.isoformat()
+    try:
+        # Cheap prefilter: only rows whose own updated_at is already past the
+        # cutoff are candidates. Confirm against conversation/contact activity
+        # before deleting, so an active chatter (whose users.updated_at can lag)
+        # is never purged.
+        candidates = (
+            supabase.table("users")
+            .select("id, created_at, updated_at")
+            .lt("updated_at", cutoff_iso)
+            .limit(500)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as e:
+        print(f"[retention] candidate lookup failed: {e}")
+        return 0
+
+    deleted = 0
+    for u in candidates:
+        uid = u["id"]
+        try:
+            # Safeguarding records gate deletion (see _safeguarding_blocks_purge):
+            # open alerts and unconfigured retention keep the account; configured,
+            # resolved, time-elapsed records become purgeable.
+            if _safeguarding_blocks_purge(uid):
+                continue
+
+            stamps = [_parse_ts(u.get("updated_at")), _parse_ts(u.get("created_at"))]
+            conv = (
+                supabase.table("conversations")
+                .select("updated_at").eq("user_id", uid).limit(1).execute().data
+            )
+            if conv:
+                stamps.append(_parse_ts(conv[0].get("updated_at")))
+            contact = (
+                supabase.table("contacts")
+                .select("contacted_at").eq("user_id", uid)
+                .order("contacted_at", desc=True).limit(1).execute().data
+            )
+            if contact:
+                stamps.append(_parse_ts(contact[0].get("contacted_at")))
+
+            latest = max((s for s in stamps if s), default=None)
+            if latest and latest >= cutoff:
+                continue  # active within the retention window after all
+
+            supabase.table("users").delete().eq("id", uid).execute()
+            deleted += 1
+        except Exception as e:
+            print(f"[retention] skip user {redact_id(uid)}: {e}")
+            continue
+
+    if deleted:
+        print(f"[retention] purged {deleted} inactive account(s) (> {retention_days} days)")
+    return deleted
+
+
 @app.post("/api/cron/daily")
 def cron_daily(x_cron_secret: str = Header(default="")):
     """
-    Fires the due reminder emails: contact nudges (3/5/7/10 days) and the
-    post-match drip. The walkers exist but nothing in-process schedules them
+    Fires the due reminder emails (contact nudges 3/5/7/10 days + the post-match
+    drip) and enforces data retention (purges accounts inactive for
+    RETENTION_DAYS). The walkers exist but nothing in-process schedules them
     — a GitHub Actions workflow (.github/workflows/daily-reminders.yml) hits
     this endpoint once a day with the shared secret.
     """
@@ -3570,8 +3843,12 @@ def cron_daily(x_cron_secret: str = Header(default="")):
         raise HTTPException(status_code=401, detail="Bad or missing x-cron-secret")
     nudges = send_nudge_reminders()
     drips = send_post_match_drip()
-    print(f"[cron] daily run: {nudges} nudges, {drips} post-match emails sent")
-    return {"nudges_sent": nudges, "post_match_sent": drips}
+    purged = purge_inactive_users()
+    print(
+        f"[cron] daily run: {nudges} nudges, {drips} post-match emails sent, "
+        f"{purged} inactive account(s) purged"
+    )
+    return {"nudges_sent": nudges, "post_match_sent": drips, "inactive_purged": purged}
 
 
 @app.get("/api/test-reminder")

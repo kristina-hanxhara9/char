@@ -91,25 +91,42 @@ export default function ReturningUserCta() {
   // New visitor (or not yet checked)
   return (
     <div className="mt-8">
-      <div className="flex flex-col sm:flex-row gap-3">
+      <div className="flex flex-col gap-3">
         <Link
           href="/onboard"
           className="inline-flex items-center justify-center px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-lg shadow-yopey-primary/30 hover:opacity-90 transition active:scale-[0.98] min-h-[52px]"
         >
           Find a care home →
         </Link>
-        <a
-          href="https://www.yopeybefriender.org"
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center justify-center px-6 py-4 rounded-2xl border-2 border-gray-200 text-gray-700 font-semibold hover:border-yopey-primary hover:text-yopey-primary transition min-h-[52px]"
-        >
-          Learn about YOPEY
-        </a>
+        <div className="flex flex-col sm:flex-row gap-3">
+          <Link
+            href="/onboard"
+            className="flex-1 inline-flex items-center justify-center px-5 py-4 rounded-2xl border-2 border-yopey-primary/30 text-yopey-primary font-semibold hover:bg-yopey-primary/10 transition min-h-[52px]"
+          >
+            Ask for advice
+          </Link>
+          <Link
+            href="/onboard"
+            className="flex-1 inline-flex items-center justify-center px-5 py-4 rounded-2xl border-2 border-yopey-primary/30 text-yopey-primary font-semibold hover:bg-yopey-primary/10 transition min-h-[52px]"
+          >
+            Polish a visit report
+          </Link>
+        </div>
       </div>
 
       <p className="mt-6 text-sm text-gray-500">
         Free · UK only · Takes about 5 minutes to get started
+      </p>
+
+      <p className="mt-3 text-sm">
+        <a
+          href="https://www.yopeybefriender.org"
+          target="_blank"
+          rel="noreferrer"
+          className="text-yopey-primary font-semibold hover:underline"
+        >
+          Learn about YOPEY →
+        </a>
       </p>
 
       {/* Returning on a new device / cleared browser */}

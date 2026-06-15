@@ -131,10 +131,16 @@ export default function ChatWindow() {
 
       if (shouldAutoSearch && u.postcode) {
         markAutoSearched(u.user_id);
+        const near =
+          u.search_preference === "school"
+            ? "your school"
+            : u.search_preference === "home"
+            ? "your home"
+            : "you";
         setMessages([
           {
             role: "assistant",
-            content: `Hey ${u.first_name}! Let me find care homes near ${u.postcode}...`,
+            content: `Hey ${u.first_name}! Let me find care homes near ${near} (${u.postcode})...`,
           },
         ]);
         setPending(true);
@@ -179,18 +185,18 @@ export default function ChatWindow() {
     el.scrollTop = el.scrollHeight;
   }, [messages, pending]);
 
-  async function handleSend() {
-    if (!user) return;
-    const text = input.trim();
-    if (!text) return;
+  // Shared send path used by both the text input and the quick-action chips.
+  async function send(text: string) {
+    if (!user || pending) return;
+    const trimmed = text.trim();
+    if (!trimmed) return;
 
     setError(null);
-    setInput("");
-    setMessages((m) => [...m, { role: "user", content: text }]);
+    setMessages((m) => [...m, { role: "user", content: trimmed }]);
     setPending(true);
 
     try {
-      const reply = await sendMessage(user.user_id, text);
+      const reply = await sendMessage(user.user_id, trimmed);
       setMessages((m) => [...m, { role: "assistant", content: reply }]);
     } catch (err: any) {
       setError(err.message || "Something went wrong sending your message.");
@@ -198,6 +204,13 @@ export default function ChatWindow() {
     } finally {
       setPending(false);
     }
+  }
+
+  function handleSend() {
+    const text = input.trim();
+    if (!text) return;
+    setInput("");
+    send(text);
   }
 
   function handleEndChat() {
@@ -277,6 +290,32 @@ export default function ChatWindow() {
 
       <div className="shrink-0 bg-white border-t border-gray-100 px-4 md:px-6 py-3 safe-bottom">
         <div className="max-w-3xl mx-auto">
+          <div className="flex gap-2 overflow-x-auto pb-2 mb-1 -mx-1 px-1">
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() => send("Please find me care homes near my postcode.")}
+              className="shrink-0 whitespace-nowrap px-3 py-2 rounded-full border-2 border-yopey-primary/30 text-yopey-primary text-sm font-semibold hover:bg-yopey-primary/10 transition disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Find a care home
+            </button>
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() => send("Can I get some advice about volunteering as a befriender?")}
+              className="shrink-0 whitespace-nowrap px-3 py-2 rounded-full border-2 border-yopey-primary/30 text-yopey-primary text-sm font-semibold hover:bg-yopey-primary/10 transition disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Ask for advice
+            </button>
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() => send("I'd like help polishing a visit report.")}
+              className="shrink-0 whitespace-nowrap px-3 py-2 rounded-full border-2 border-yopey-primary/30 text-yopey-primary text-sm font-semibold hover:bg-yopey-primary/10 transition disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Polish a visit report
+            </button>
+          </div>
           <ChatInput
             value={input}
             onChange={setInput}

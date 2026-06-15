@@ -14,6 +14,14 @@ export default function OnboardForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const utmSource = searchParams.get("utm_source") || undefined;
+  // The landing-page buttons pass the user's choice through onboarding, so the
+  // chat continues straight into it instead of asking "what would you like to
+  // do?" again after the form.
+  const intentParam = searchParams.get("intent");
+  const intent =
+    intentParam === "search" || intentParam === "advice" || intentParam === "report"
+      ? intentParam
+      : null;
 
   const [step, setStep] = useState<Step>(1);
   const [personal, setPersonal] = useState<PersonalData>(emptyPersonal);
@@ -93,15 +101,15 @@ export default function OnboardForm() {
         search_preference: personal.searchPreference ?? "home",
       });
 
-      // Fire the auto-search NOW (in the background) so the LLM is processing
-      // while the user navigates. ChatWindow awaits the same promise and
-      // renders the reply when it arrives — typically already done by the
-      // time /chat is fully painted.
-      if (onboardRes.postcode) {
+      // Preload the care-home search only when that's where they're headed, so
+      // the LLM is processing during navigation and the result is ready the
+      // moment /chat paints. For advice/report we don't search, so we don't
+      // spend the call.
+      if (onboardRes.postcode && intent === "search") {
         preloadInitialChat(onboardRes.user_id, onboardRes.postcode);
       }
 
-      router.push("/chat");
+      router.push(intent ? `/chat?intent=${intent}` : "/chat");
     } catch (err: any) {
       setError(err.message || "Something went wrong. Please try again.");
       setSubmitting(false);

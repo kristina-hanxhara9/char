@@ -93,20 +93,20 @@ export default function ReturningUserCta() {
     <div className="mt-8">
       <div className="flex flex-col gap-3">
         <Link
-          href="/onboard"
+          href="/onboard?intent=search"
           className="inline-flex items-center justify-center px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-lg shadow-yopey-primary/30 hover:opacity-90 transition active:scale-[0.98] min-h-[52px]"
         >
           Find a care home →
         </Link>
         <div className="flex flex-col sm:flex-row gap-3">
           <Link
-            href="/onboard"
+            href="/onboard?intent=advice"
             className="flex-1 inline-flex items-center justify-center px-5 py-4 rounded-2xl border-2 border-yopey-primary/30 text-yopey-primary font-semibold hover:bg-yopey-primary/10 transition min-h-[52px]"
           >
             Ask for advice
           </Link>
           <Link
-            href="/onboard"
+            href="/onboard?intent=report"
             className="flex-1 inline-flex items-center justify-center px-5 py-4 rounded-2xl border-2 border-yopey-primary/30 text-yopey-primary font-semibold hover:bg-yopey-primary/10 transition min-h-[52px]"
           >
             Polish a visit report

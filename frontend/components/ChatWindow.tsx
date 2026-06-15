@@ -12,37 +12,6 @@ import { consumeInitialChat, fetchUser, sendMessage } from "@/lib/api";
 import { userStorage, type StoredUser } from "@/lib/storage";
 import { useIsEmbedded } from "@/lib/embed";
 
-// Tracks whether we've already auto-searched for this user in this browser
-// session. Survives refreshes within the same tab, resets in a new tab —
-// which is the right cadence: don't re-spend a search per refresh, but DO
-// search again if the teen comes back tomorrow.
-function hasAlreadyAutoSearched(userId: string): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    return sessionStorage.getItem(`yopey_autosearched_${userId}`) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function markAutoSearched(userId: string): void {
-  if (typeof window === "undefined") return;
-  try {
-    sessionStorage.setItem(`yopey_autosearched_${userId}`, "1");
-  } catch {
-    /* sessionStorage blocked (e.g. Safari private mode) — accept the cost */
-  }
-}
-
-function clearAutoSearched(userId: string): void {
-  if (typeof window === "undefined") return;
-  try {
-    sessionStorage.removeItem(`yopey_autosearched_${userId}`);
-  } catch {
-    /* ignore */
-  }
-}
-
 type Msg = { role: "user" | "assistant"; content: string };
 
 export default function ChatWindow() {
@@ -55,6 +24,9 @@ export default function ChatWindow() {
   const [input, setInput] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // "init" until the load effect decides; "choosing" shows the three options
+  // at the start; "active" once a choice is made or a message is sent.
+  const [phase, setPhase] = useState<"init" | "choosing" | "active">("init");
   const scrollRef = useRef<HTMLDivElement>(null);
   // Inside the embeddable widget the host panel supplies its own title bar, so
   // we drop our page header to avoid a double chrome.
@@ -64,11 +36,77 @@ export default function ChatWindow() {
   // belt-and-braces against effect re-runs.
   const initFiredRef = useRef(false);
 
-  // Load stored user — if missing, send to /onboard.
-  // If postcode is on file AND we haven't already auto-searched this session,
-  // kick off an automatic care-home search so the teen lands on a real result
-  // instead of a question. Refreshes / re-mounts within the same session reuse
-  // the prior search (no fresh LLM call, no history pollution).
+  // Run one of the three actions. Shared by the ?intent= deep links (set by the
+  // landing-page buttons) and the in-chat chooser, so "after choosing, it
+  // continues" is literally the same code path the landing page uses.
+  async function runIntent(which: "search" | "advice" | "report", u: StoredUser) {
+    setPhase("active");
+
+    if (which === "report") {
+      setMessages([
+        {
+          role: "assistant",
+          content: `Hi ${u.first_name}. Paste your visit-report draft below and I'll help you polish it. If you haven't written anything yet, just tell me what happened on the visit.`,
+        },
+      ]);
+      return;
+    }
+
+    if (which === "advice") {
+      setMessages([
+        {
+          role: "assistant",
+          content: `Hi ${u.first_name}. What would you like advice on? For example: tips for your first visit, what to say to a resident, or trying another care home.`,
+        },
+      ]);
+      return;
+    }
+
+    // which === "search"
+    if (!u.postcode) {
+      setMessages([
+        {
+          role: "assistant",
+          content: `Hey ${u.first_name}! What's your postcode? I'll find care homes near you.`,
+        },
+      ]);
+      return;
+    }
+    const near =
+      u.search_preference === "school"
+        ? "your school"
+        : u.search_preference === "home"
+        ? "your home"
+        : "you";
+    setMessages([
+      {
+        role: "assistant",
+        content: `Hey ${u.first_name}! Let me find care homes near ${near} (${u.postcode})...`,
+      },
+    ]);
+    setPending(true);
+    try {
+      // Reuse a preloaded promise if OnboardForm fired the search at submit
+      // time — the LLM has been processing during navigation, so the reply is
+      // often already in by the time they tap "Find a care home".
+      const preloaded = consumeInitialChat(u.user_id);
+      const reply = await (preloaded ??
+        sendMessage(
+          u.user_id,
+          `Please find me 5 care homes near my postcode ${u.postcode}.`
+        ));
+      setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
+    } catch (err: any) {
+      setError(err.message || "Couldn't load care homes. Try sending a message.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  // Load stored user — if missing, send to /onboard. A landing-page button may
+  // deep-link with ?intent=search|advice|report, which we run straight away.
+  // Otherwise (the normal entry after the questionnaire) we present the three
+  // choices first and let them pick — we no longer auto-search on open.
   useEffect(() => {
     if (initFiredRef.current) return;
     initFiredRef.current = true;
@@ -100,74 +138,22 @@ export default function ChatWindow() {
       }
       setUser(u);
 
-      // ── Returning-user intents (set by the landing-page buttons) ──
-      // These open the chat for a specific purpose and DO NOT auto-search.
-      if (intent === "report") {
-        setMessages([
-          {
-            role: "assistant",
-            content: `Hi ${u.first_name}. Paste your visit-report draft below and I'll help you polish it. If you haven't written anything yet, just tell me what happened on the visit.`,
-          },
-        ]);
-        return;
-      }
-      if (intent === "advice") {
-        setMessages([
-          {
-            role: "assistant",
-            content: `Hi ${u.first_name}. What would you like advice on? For example: tips for your first visit, what to say to a resident, or trying another care home.`,
-          },
-        ]);
+      // Landing-page buttons deep-link with an intent — honour it directly.
+      if (intent === "search" || intent === "advice" || intent === "report") {
+        await runIntent(intent, u);
         return;
       }
 
-      // intent=search forces a fresh care-home search even if one already ran
-      // this session (returning user explicitly wants another home).
-      if (intent === "search" && u.postcode) {
-        clearAutoSearched(u.user_id);
-      }
-
-      const shouldAutoSearch =
-        Boolean(u.postcode) && !hasAlreadyAutoSearched(u.user_id);
-
-      if (shouldAutoSearch && u.postcode) {
-        markAutoSearched(u.user_id);
-        const near =
-          u.search_preference === "school"
-            ? "your school"
-            : u.search_preference === "home"
-            ? "your home"
-            : "you";
+      // Normal entry (just finished the questionnaire, or opened /chat with no
+      // intent): greet, then offer the three options and continue once picked.
+      if (u.postcode) {
         setMessages([
           {
             role: "assistant",
-            content: `Hey ${u.first_name}! Let me find care homes near ${near} (${u.postcode})...`,
+            content: `Hi ${u.first_name}! What would you like to do?`,
           },
         ]);
-        setPending(true);
-        try {
-          // Reuse a preloaded promise if OnboardForm fired the auto-search
-          // at submit time — that way the LLM has been processing while the
-          // user navigated, and the reply is often already in.
-          const preloaded = consumeInitialChat(u.user_id);
-          const reply = await (preloaded ??
-            sendMessage(
-              u.user_id,
-              `Please find me 5 care homes near my postcode ${u.postcode}.`
-            ));
-          setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
-        } catch (err: any) {
-          setError(err.message || "Couldn't load care homes. Try sending a message.");
-        } finally {
-          setPending(false);
-        }
-      } else if (u.postcode) {
-        setMessages([
-          {
-            role: "assistant",
-            content: `Welcome back, ${u.first_name}! What would you like to do next?`,
-          },
-        ]);
+        setPhase("choosing");
       } else {
         setMessages([
           {
@@ -175,6 +161,7 @@ export default function ChatWindow() {
             content: `Hey ${u.first_name}! What's your postcode? I'll find care homes near you.`,
           },
         ]);
+        setPhase("active");
       }
     })();
   }, [router, intent]);
@@ -192,6 +179,8 @@ export default function ChatWindow() {
     const trimmed = text.trim();
     if (!trimmed) return;
 
+    // Any sent message means they've started — dismiss the opening chooser.
+    setPhase("active");
     setError(null);
     setMessages((m) => [...m, { role: "user", content: trimmed }]);
     setPending(true);
@@ -289,37 +278,66 @@ export default function ChatWindow() {
               {error}
             </div>
           )}
+          {phase === "choosing" && user && (
+            <div className="pt-1 flex flex-col gap-3">
+              <button
+                type="button"
+                onClick={() => runIntent("search", user)}
+                className="inline-flex items-center justify-center px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-lg shadow-yopey-primary/30 hover:opacity-90 transition active:scale-[0.98] min-h-[52px]"
+              >
+                Find a care home →
+              </button>
+              <div className="flex flex-col sm:flex-row gap-3">
+                <button
+                  type="button"
+                  onClick={() => runIntent("advice", user)}
+                  className="flex-1 inline-flex items-center justify-center px-5 py-4 rounded-2xl border-2 border-yopey-primary/30 text-yopey-primary font-semibold hover:bg-yopey-primary/10 transition min-h-[52px]"
+                >
+                  Ask for advice
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runIntent("report", user)}
+                  className="flex-1 inline-flex items-center justify-center px-5 py-4 rounded-2xl border-2 border-yopey-primary/30 text-yopey-primary font-semibold hover:bg-yopey-primary/10 transition min-h-[52px]"
+                >
+                  Polish a visit report
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
       <div className="shrink-0 bg-white border-t border-gray-100 px-4 md:px-6 py-3 safe-bottom">
         <div className="max-w-3xl mx-auto">
-          <div className="flex gap-2 overflow-x-auto pb-2 mb-1 -mx-1 px-1">
-            <button
-              type="button"
-              disabled={pending}
-              onClick={() => send("Please find me care homes near my postcode.")}
-              className="shrink-0 whitespace-nowrap px-3 py-2 rounded-full border-2 border-yopey-primary/30 text-yopey-primary text-sm font-semibold hover:bg-yopey-primary/10 transition disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Find a care home
-            </button>
-            <button
-              type="button"
-              disabled={pending}
-              onClick={() => send("Can I get some advice about volunteering as a befriender?")}
-              className="shrink-0 whitespace-nowrap px-3 py-2 rounded-full border-2 border-yopey-primary/30 text-yopey-primary text-sm font-semibold hover:bg-yopey-primary/10 transition disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Ask for advice
-            </button>
-            <button
-              type="button"
-              disabled={pending}
-              onClick={() => send("I'd like help polishing a visit report.")}
-              className="shrink-0 whitespace-nowrap px-3 py-2 rounded-full border-2 border-yopey-primary/30 text-yopey-primary text-sm font-semibold hover:bg-yopey-primary/10 transition disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Polish a visit report
-            </button>
-          </div>
+          {phase === "active" && (
+            <div className="flex gap-2 overflow-x-auto pb-2 mb-1 -mx-1 px-1">
+              <button
+                type="button"
+                disabled={pending}
+                onClick={() => send("Please find me another care home near my postcode.")}
+                className="shrink-0 whitespace-nowrap px-3 py-2 rounded-full border-2 border-yopey-primary/30 text-yopey-primary text-sm font-semibold hover:bg-yopey-primary/10 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Find another care home
+              </button>
+              <button
+                type="button"
+                disabled={pending}
+                onClick={() => send("Can I get some advice about volunteering as a befriender?")}
+                className="shrink-0 whitespace-nowrap px-3 py-2 rounded-full border-2 border-yopey-primary/30 text-yopey-primary text-sm font-semibold hover:bg-yopey-primary/10 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Ask for advice
+              </button>
+              <button
+                type="button"
+                disabled={pending}
+                onClick={() => send("I'd like help polishing a visit report.")}
+                className="shrink-0 whitespace-nowrap px-3 py-2 rounded-full border-2 border-yopey-primary/30 text-yopey-primary text-sm font-semibold hover:bg-yopey-primary/10 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Polish a visit report
+              </button>
+            </div>
+          )}
           <ChatInput
             value={input}
             onChange={setInput}

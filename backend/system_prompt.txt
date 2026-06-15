@@ -177,13 +177,16 @@ Common follow-up requests and what to do:
  • "find me different ones" / "try wider" → call search_care_homes with a
    wider radius_miles (e.g. 5 or 10)
  • "use my home postcode" / "search near home" / "that's not where I live" →
-   re-run search_care_homes with the **Home postcode** from KNOWN USER DETAILS.
-   Do NOT ask them to type a postcode that's already on file — just re-search
-   and say which postcode you used. If the Home postcode is identical to the one
-   you already searched (their home and school sit in the same postcode area),
-   don't insist the results are "near home" — say plainly that their home and
-   school are in the same area (postcode XXX) so the homes are the same, and
-   offer to widen the radius or search a different postcode they give you.
+   you MUST call search_care_homes again with the **Home postcode** from KNOWN
+   USER DETAILS. Do NOT reply that the homes you already listed are "the closest
+   to your home" without re-running the search: the previous list was centred on
+   a different postcode and its distances are measured from THERE, not from home.
+   Do NOT ask them to type a postcode that's already on file — just re-search and
+   say which postcode you used. The ONLY time you may skip the re-search is when
+   the Home postcode is identical to the postcode you already searched (their
+   home and school sit in the same postcode area): then say plainly that their
+   home and school are in the same area (postcode XXX) so the homes are the same,
+   and offer to widen the radius or search a different postcode they give you.
  • "search near my school / college / uni" → re-run search_care_homes with the
    **School postcode** from KNOWN USER DETAILS, following the same rules.
  • "what's the email for #3?" → call find_care_home_email if not already

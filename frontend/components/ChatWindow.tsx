@@ -103,28 +103,50 @@ export default function ChatWindow() {
     }
   }
 
-  // Load stored user — if missing, send to /onboard. A landing-page button may
-  // deep-link with ?intent=search|advice|report, which we run straight away.
-  // Otherwise (the normal entry after the questionnaire) we present the three
-  // choices first and let them pick — we no longer auto-search on open.
+  // Load the stored user and render from it immediately — we do NOT block the
+  // first paint on the server fetch, so the chat never hangs on "Loading..."
+  // when the backend is cold or slow. A landing-page/menu button may deep-link
+  // with ?intent=search|advice|report; we honour it straight away from the
+  // stored user, then refresh the canonical record in the background.
   useEffect(() => {
     if (initFiredRef.current) return;
     initFiredRef.current = true;
 
     const stored = userStorage.get();
     if (!stored) {
-      router.replace("/onboard");
+      // No account yet. Advice/report skip the questionnaire, so send those to
+      // the quick sign-in; anything else to the full wizard.
+      if (intent === "advice" || intent === "report") {
+        router.replace(`/start?intent=${intent}`);
+      } else {
+        router.replace("/onboard");
+      }
       return;
     }
 
+    // Show the chat right away from localStorage (no network wait).
+    setUser(stored);
+
     (async () => {
-      // Pull the canonical user record from the server so any changes made
-      // mid-chat (bot updating postcode/email via save_user_details, Tony
-      // updating from the dashboard, etc.) are reflected on this device.
-      let u: StoredUser = stored;
+      // Open the chosen route immediately using the stored user.
+      if (intent === "search" || intent === "advice" || intent === "report") {
+        await runIntent(intent, stored);
+      } else {
+        setMessages([
+          {
+            role: "assistant",
+            content: `Hi ${stored.first_name}! What would you like to do?`,
+          },
+        ]);
+        setPhase("choosing");
+      }
+
+      // Refresh the canonical record in the background (postcode/email may have
+      // changed via save_user_details or the dashboard). Non-blocking: if the
+      // server is unreachable we just keep the stored user.
       try {
         const fresh = await fetchUser(stored.user_id, stored.user_token);
-        u = {
+        const merged: StoredUser = {
           user_id: fresh.user_id,
           user_token: stored.user_token,
           first_name: fresh.first_name,
@@ -132,36 +154,10 @@ export default function ChatWindow() {
           is_student: stored.is_student,
           search_preference: stored.search_preference,
         };
-        userStorage.set(u);
+        userStorage.set(merged);
+        setUser(merged);
       } catch {
-        // Server fetch failed (offline, expired token, server down) — carry on with localStorage
-      }
-      setUser(u);
-
-      // Landing-page buttons deep-link with an intent — honour it directly.
-      if (intent === "search" || intent === "advice" || intent === "report") {
-        await runIntent(intent, u);
-        return;
-      }
-
-      // Normal entry (just finished the questionnaire, or opened /chat with no
-      // intent): greet, then offer the three options and continue once picked.
-      if (u.postcode) {
-        setMessages([
-          {
-            role: "assistant",
-            content: `Hi ${u.first_name}! What would you like to do?`,
-          },
-        ]);
-        setPhase("choosing");
-      } else {
-        setMessages([
-          {
-            role: "assistant",
-            content: `Hey ${u.first_name}! What's your postcode? I'll find care homes near you.`,
-          },
-        ]);
-        setPhase("active");
+        // offline / expired token / server asleep — stored user is fine
       }
     })();
   }, [router, intent]);

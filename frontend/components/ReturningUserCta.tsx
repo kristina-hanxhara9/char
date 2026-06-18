@@ -100,13 +100,13 @@ export default function ReturningUserCta() {
         </Link>
         <div className="flex flex-col sm:flex-row gap-3">
           <Link
-            href="/onboard?intent=advice"
+            href="/start?intent=advice"
             className="flex-1 inline-flex items-center justify-center px-5 py-4 rounded-2xl border-2 border-yopey-primary/30 text-yopey-primary font-semibold hover:bg-yopey-primary/10 transition min-h-[52px]"
           >
             Ask for advice
           </Link>
           <Link
-            href="/onboard?intent=report"
+            href="/start?intent=report"
             className="flex-1 inline-flex items-center justify-center px-5 py-4 rounded-2xl border-2 border-yopey-primary/30 text-yopey-primary font-semibold hover:bg-yopey-primary/10 transition min-h-[52px]"
           >
             Polish a visit report

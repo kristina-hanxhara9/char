@@ -549,6 +549,7 @@ def _fetch_cqc_care_homes(location: dict) -> list | dict:
                 else None
             )
 
+            loc_id = (detail.get("locationId") or "").strip()
             care_homes.append({
                 "name": detail.get("name", "Unknown"),
                 "address": ", ".join(
@@ -574,7 +575,13 @@ def _fetch_cqc_care_homes(location: dict) -> list | dict:
                 "specialisms": specialisms,
                 "number_of_beds": detail.get("numberOfBeds", "Unknown"),
                 "last_inspection_date": last_inspection,
-                "cqc_url": f"https://www.cqc.org.uk/location/{detail.get('locationId', '')}",
+                # Direct profile when CQC gave us a real locationId; otherwise a
+                # cqc.org.uk search (never 404s) so the link is always live.
+                "cqc_url": (
+                    f"https://www.cqc.org.uk/location/{loc_id}"
+                    if loc_id
+                    else _cqc_search_url(detail.get("name", ""), detail.get("postalCode", ""))
+                ),
                 "carehome_co_uk_url": _carehome_directory_url(
                     detail.get("name", ""), detail.get("postalCode", "")
                 ),

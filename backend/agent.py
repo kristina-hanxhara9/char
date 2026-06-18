@@ -3398,6 +3398,24 @@ def health():
     return {"ok": True, "llm": f"gemini/{GEMINI_BACKEND} ({BRAIN_MODEL})"}
 
 
+@app.get("/api/keepalive")
+@limiter.limit("6/minute")
+def keepalive(request: Request):
+    """Read-only DB touch so the free Supabase project never pauses (it idles
+    after ~7 days of inactivity). Pinged daily by .github/workflows/keepalive.yml.
+    Returns no data and needs no secret, so it keeps working even if the reminder
+    cron isn't configured. Deliberately separate from /health, which is Render's
+    health check and must not depend on the database."""
+    db_ok = False
+    if supabase:
+        try:
+            supabase.table("users").select("id").limit(1).execute()
+            db_ok = True
+        except Exception as e:
+            print(f"[keepalive] db touch failed: {e}")
+    return {"ok": True, "db": db_ok}
+
+
 def _record_email_response(user_id: str, stage: int, answer: str) -> None:
     if not supabase:
         return

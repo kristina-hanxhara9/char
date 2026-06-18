@@ -67,7 +67,7 @@ export default function ChatWidget() {
           </div>
           <iframe
             title="YOPEY Befriender chat"
-            src="/onboard?embed=1"
+            src="/start?embed=1"
             className="flex-1 w-full border-0"
           />
         </div>

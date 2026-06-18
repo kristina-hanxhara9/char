@@ -1,8 +1,9 @@
 import { Suspense } from "react";
-import QuickStartForm from "@/components/QuickStartForm";
+import StartScreen from "@/components/StartScreen";
 import FunnelHeader from "@/components/FunnelHeader";
 
-// Lightweight entry for the advice / visit-report routes (no questionnaire).
+// Funnel entry. With no intent it shows the three options (what the widget
+// bubble opens to); ?intent=advice|report renders the quick sign-in.
 // "Find a care home" still goes through the full /onboard wizard.
 export default function StartPage() {
   return (
@@ -11,7 +12,7 @@ export default function StartPage() {
 
       <section className="flex-1 px-6 md:px-10 flex items-center justify-center">
         <Suspense fallback={null}>
-          <QuickStartForm />
+          <StartScreen />
         </Suspense>
       </section>
 

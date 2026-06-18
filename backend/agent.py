@@ -3326,6 +3326,16 @@ class OnboardRequest(BaseModel):
     utm_source: Optional[str] = None
 
 
+class QuickStartRequest(BaseModel):
+    """Lightweight onboarding for the advice / visit-report routes, which don't
+    need a postcode or the survey — just enough to run the chat and keep a
+    safeguarding contact on file: name, age (the 16+ gate) and email."""
+    first_name: str = Field(min_length=1, max_length=50)
+    age: int = Field(ge=16, le=120, description="Must be 16 or older")
+    email: EmailStr
+    utm_source: Optional[str] = None
+
+
 class SurveyRequest(BaseModel):
     """
     Dementia Attitudes Scale, 10 Likert questions (1=Strongly Disagree, 7=Strongly Agree).
@@ -4030,6 +4040,30 @@ def return_exchange(req: ReturnExchangeRequest, request: Request):
         postcode=user.get("postcode"),
         is_student=user.get("is_student"),
         search_preference=user.get("search_preference"),
+    )
+
+
+@app.post("/api/quick-start", response_model=OnboardResponse)
+@limiter.limit("10/minute")
+def quick_start_endpoint(req: QuickStartRequest, request: Request):
+    """Minimal onboarding for the 'ask for advice' / 'polish a visit report'
+    routes — no postcode, no survey. Creates a user from name + age + email so
+    the chat can run and any safeguarding alert can still reach the person."""
+    _require_services()
+    try:
+        user = create_user(
+            first_name=req.first_name,
+            age=req.age,
+            email=str(req.email),
+            utm_source=req.utm_source,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not create user: {e}")
+    return OnboardResponse(
+        user_id=user["id"],
+        user_token=make_user_token(user["id"]),
+        first_name=user["first_name"],
+        postcode=user.get("postcode"),
     )
 
 

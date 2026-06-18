@@ -143,6 +143,26 @@ export async function onboard(
   return res.json();
 }
 
+// Lightweight onboarding for the advice / visit-report routes — name + age +
+// email only, no postcode or survey. Returns the same session shape as onboard.
+export async function quickStart(payload: {
+  first_name: string;
+  age: number;
+  email: string;
+  utm_source?: string;
+}): Promise<OnboardResponse> {
+  const res = await fetch(`${API_URL}/api/quick-start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `Quick start failed (${res.status})`);
+  }
+  return res.json();
+}
+
 export type UserMe = {
   user_id: string;
   first_name: string;

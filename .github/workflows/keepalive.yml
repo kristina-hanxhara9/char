@@ -1,24 +1,35 @@
 name: Keep backend and Supabase warm
 
-# Pings a tiny read-only DB-touch endpoint every 10 minutes so:
+# Pings a tiny read-only DB-touch endpoint so:
 #  - the free Supabase project never pauses (it idles after ~7 days), and
-#  - Render's free web service rarely sleeps (it naps after ~15 min idle), so
-#    the first chat message doesn't wait on a ~50s cold start.
+#  - Render's free web service gets pinged (it naps after ~15 min idle).
 # The endpoint is read-only and exposes no data, and runs independently of the
-# reminder cron (no shared secret). Note: GitHub's scheduler isn't perfectly
-# punctual for short intervals, so the real gap can occasionally exceed 10 min.
+# reminder cron (no shared secret).
+#
+# NOTE: GitHub throttles frequent schedules — this realistically runs ~hourly,
+# which is plenty to stop Supabase pausing but NOT enough to keep Render always
+# warm. For always-warm Render, use a free uptime monitor (e.g. UptimeRobot,
+# 5-min checks) pointed at /api/keepalive.
 on:
   schedule:
-    - cron: "*/10 * * * *" # every 10 minutes
+    - cron: "*/10 * * * *" # request every 10 min (GitHub may run it less often)
   workflow_dispatch: {}
 
 jobs:
   keepalive:
     runs-on: ubuntu-latest
     steps:
-      - name: Touch the database
-        # Render's free tier may still be waking on the first hit, so allow
-        # retries and a generous timeout.
+      - name: Ping keep-alive
+        # Never fails the job. A non-200 (e.g. the backend hasn't deployed
+        # /api/keepalive yet → 404) is surfaced as a warning, not an error, so
+        # it doesn't email on every run. The request still reaches Render and
+        # keeps it warm; once the backend is deployed, the 200 also touches the DB.
         run: |
-          curl -fsS --retry 3 --retry-delay 30 --retry-all-errors --max-time 180 \
-            "${{ vars.BACKEND_URL || 'https://yopey-backend.onrender.com' }}/api/keepalive"
+          url="${{ vars.BACKEND_URL || 'https://yopey-backend.onrender.com' }}/api/keepalive"
+          code=$(curl -sS --max-time 90 -o /dev/null -w '%{http_code}' "$url" || echo 000)
+          echo "keepalive -> HTTP $code"
+          if [ "$code" = "200" ]; then
+            echo "OK - Supabase touched, backend warm."
+          else
+            echo "::warning::keepalive got HTTP $code from $url - backend was pinged (kept warm), but the DB-touch needs /api/keepalive deployed (Render → Manual Deploy)."
+          fi

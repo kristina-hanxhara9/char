@@ -25,7 +25,7 @@ jobs:
         # it doesn't email on every run. The request still reaches Render and
         # keeps it warm; once the backend is deployed, the 200 also touches the DB.
         run: |
-          url="${{ vars.BACKEND_URL || 'https://yopey-backend.onrender.com' }}/api/keepalive"
+          url="${{ vars.BACKEND_URL || 'https://char-2nu6.onrender.com' }}/api/keepalive"
           code=$(curl -sS --max-time 90 -o /dev/null -w '%{http_code}' "$url" || echo 000)
           echo "keepalive -> HTTP $code"
           if [ "$code" = "200" ]; then

@@ -3472,37 +3472,55 @@ def _handle_outcome_click(data: dict) -> HTMLResponse:
     user_id = data["u"]
     contact_id = data["c"]
     outcome = data["o"]
-    if outcome not in ("accepted", "rejected") or not supabase:
+    if outcome not in ("accepted", "rejected"):
         return HTMLResponse(content=RESPONSE_PAGE_INVALID, status_code=400)
 
-    contact_res = (
-        supabase.table("contacts")
-        .select("*")
-        .eq("id", contact_id)
-        .eq("user_id", user_id)
-        .limit(1)
-        .execute()
-    )
-    if not contact_res.data:
-        return HTMLResponse(content=RESPONSE_PAGE_INVALID, status_code=404)
-    contact = contact_res.data[0]
+    # Operator test emails carry placeholder ids ("test-user"/"test-contact"),
+    # which aren't valid UUIDs — render the real response page without touching
+    # the database so the flow can be previewed safely.
+    is_test = user_id == "test-user" or contact_id == "test-contact"
 
-    # Idempotent: don't double-trigger if they click twice
-    if not contact.get("reply_received"):
-        supabase.table("contacts").update(
-            {"reply_received": True, "outcome": outcome}
-        ).eq("id", contact_id).execute()
+    if is_test:
+        home_name = "Sunrise Care Home (TEST)"
+    else:
+        if not supabase:
+            return HTMLResponse(content=RESPONSE_PAGE_INVALID, status_code=400)
+        # Wrapped so a malformed/expired link shows a friendly page, never a 500.
+        try:
+            contact_res = (
+                supabase.table("contacts")
+                .select("*")
+                .eq("id", contact_id)
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as e:
+            print(f"[outcome] contact lookup failed: {e}")
+            return HTMLResponse(content=RESPONSE_PAGE_INVALID, status_code=400)
+        if not contact_res.data:
+            return HTMLResponse(content=RESPONSE_PAGE_INVALID, status_code=404)
+        contact = contact_res.data[0]
+        home_name = contact.get("care_home_name") or "the care home"
 
-        if outcome == "accepted":
-            send_post_match_welcome(user_id, contact)
-        else:
-            update_user(user_id, status="searching")
+        # Idempotent: don't double-trigger if they click twice
+        if not contact.get("reply_received"):
+            try:
+                supabase.table("contacts").update(
+                    {"reply_received": True, "outcome": outcome}
+                ).eq("id", contact_id).execute()
+                if outcome == "accepted":
+                    send_post_match_welcome(user_id, contact)
+                else:
+                    update_user(user_id, status="searching")
+            except Exception as e:
+                print(f"[outcome] update failed: {e}")
 
     if outcome == "accepted":
         return HTMLResponse(content=RESPONSE_PAGE_TEMPLATE.format(
             title="Brilliant news! 🎉",
             body=(
-                f"<p>Amazing — <strong>{html.escape(contact['care_home_name'])}</strong> said yes!</p>"
+                f"<p>Amazing — <strong>{html.escape(home_name)}</strong> said yes!</p>"
                 f"<p>I've just sent you another email with everything you need before "
                 f"your first visit (DBS check, training videos, conversation starters). "
                 f"Keep an eye on your inbox.</p>"

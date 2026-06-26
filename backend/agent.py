@@ -3896,16 +3896,22 @@ def test_reminder(
     email: EmailStr,
     secret: str = "",
     delay_seconds: int = 60,
+    stage: int = 1,
+    series: str = "nudge",
 ):
     """
-    Operator utility: send a sample stage-1 nudge to `email` after a short
-    delay (default 60s) through the REAL template + Resend path, so a freshly
-    configured RESEND_API_KEY can be verified end-to-end. Open in a browser:
+    Operator utility: send a sample reminder to `email` after a short delay
+    (default 60s) through the REAL template + Resend path — verifies the email
+    setup end-to-end and previews each reminder. Open in a browser:
 
         /api/test-reminder?email=you@example.com&secret=<CRON_SECRET or dashboard password>
 
-    The sample care home is clearly labelled TEST and the Yes/No buttons point
-    at a non-existent contact, so clicking them won't touch real data.
+    Pick which one to preview:
+      • series=nudge (default): contact chase-ups. stage 1..4 = day 3/5/7/10.
+      • series=postmatch: post-acceptance drip. stage 1..5 = day 0/2/7/14/30.
+
+    The sample care home is clearly labelled TEST and the buttons point at a
+    non-existent contact, so clicking them won't touch real data.
     """
     valid_secrets = [s for s in (CRON_SECRET, DASHBOARD_PASSWORD) if s and s != "changeme"]
     if not any(hmac.compare_digest(secret, s) for s in valid_secrets):
@@ -3913,6 +3919,10 @@ def test_reminder(
     if not RESEND_API_KEY:
         raise HTTPException(status_code=503, detail="RESEND_API_KEY not configured")
     delay = max(1, min(delay_seconds, 600))
+
+    schedule = POST_MATCH_SCHEDULE if series == "postmatch" else NUDGE_SCHEDULE
+    idx = max(0, min(stage - 1, len(schedule) - 1))
+    stage_def = schedule[idx]
 
     fake_user = {"id": "test-user", "first_name": "Test", "email": str(email)}
     fake_contact = {
@@ -3923,16 +3933,30 @@ def test_reminder(
 
     def _send() -> None:
         try:
-            subject, text_body, html_body = render_nudge_email(
-                NUDGE_SCHEDULE[0], fake_user, fake_contact
-            )
+            if series == "postmatch":
+                subject, text_body, html_body = render_post_match_email(
+                    stage_def, fake_user, fake_contact
+                )
+            else:
+                subject, text_body, html_body = render_nudge_email(
+                    stage_def, fake_user, fake_contact
+                )
             ok = send_email(str(email), f"[TEST] {subject}", text_body, html_body)
-            print(f"[test-reminder] sent={ok} to {redact_email(str(email))} after {delay}s")
+            print(
+                f"[test-reminder] sent={ok} series={series} "
+                f"stage={stage_def.get('stage')} to {redact_email(str(email))}"
+            )
         except Exception as e:
             print(f"[test-reminder] failed: {e}")
 
     threading.Timer(delay, _send).start()
-    return {"scheduled": True, "to": str(email), "in_seconds": delay}
+    return {
+        "scheduled": True,
+        "to": str(email),
+        "series": series,
+        "stage": stage_def.get("stage"),
+        "in_seconds": delay,
+    }
 
 
 class ReturnLinkRequest(BaseModel):

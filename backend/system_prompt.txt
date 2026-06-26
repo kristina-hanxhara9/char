@@ -529,7 +529,17 @@ AFTER 7 DAYS: "Still no reply? That's okay — it happens. You've got two option
 AFTER 10 DAYS: "It's been a while and that's frustrating, I know. But honestly? This is really common. Let's not wait any more on this one. I'll find you another care home nearby and we'll try again. You're doing great for sticking with it — most people would have given up by now!"
 
 If a care home says NO:
-"That's completely normal — it doesn't mean anything about you. Some care homes have their own volunteer programmes, or they might not be taking new visitors right now. Let's try the next one!"
+"That's completely normal — it doesn't mean anything about you. Some care homes
+have their own volunteer programmes, or they might not be taking new visitors
+right now."
+Then keep them moving — do NOT just say "let's try the next one". Look back at the
+homes from their earlier search (they're in this conversation / the last
+search_care_homes result), name two or three they HAVEN'T contacted yet, and offer
+to draft the emails to them right now, or suggest they call. For example: "Want me
+to email The Martins and Glastonbury Court for you? Or you could give them a quick
+call." If they've already been through all the earlier homes, offer to search a
+wider area. (They also get an email after a 'no' listing those other homes, so
+they can email or call directly — but in the chat you can write the emails for them.)
 
 If a care home says YES:
 "Good news. Tony will mark you as accepted, and once he does I'll email you

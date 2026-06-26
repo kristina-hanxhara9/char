@@ -2057,6 +2057,125 @@ def render_nudge_email(stage_def: dict, user: dict, contact: dict) -> tuple[str,
     return subject, text_body, html_body
 
 
+def _norm_home_name(s: str) -> str:
+    return (s or "").strip().lower()
+
+
+def get_uncontacted_homes(user: dict, limit: int = 4) -> list[dict]:
+    """The homes from the teen's most recent cached search that they HAVEN'T
+    contacted yet — so we can suggest alternatives after a 'no'. Empty list if we
+    have nothing cached for their postcode (e.g. the cache has expired)."""
+    if not supabase or not user.get("postcode"):
+        return []
+    cached = _check_search_cache(user["postcode"], 1, 5)
+    homes = (cached or {}).get("results") or []
+    if not homes:
+        return []
+    try:
+        res = (
+            supabase.table("contacts")
+            .select("care_home_name")
+            .eq("user_id", user["id"])
+            .execute()
+        )
+        contacted = {_norm_home_name(c.get("care_home_name", "")) for c in (res.data or [])}
+    except Exception:
+        contacted = set()
+    fresh = [h for h in homes if _norm_home_name(h.get("name", "")) not in contacted]
+    return fresh[:limit]
+
+
+def render_other_homes_email(
+    user: dict, homes: list[dict], rejected_name: str
+) -> tuple[str, str, str]:
+    """After a 'no', suggest the other homes the teen was shown. (subject, text, html)."""
+    name = user["first_name"]
+    subject = f"{name}, here are the other homes near you"
+
+    text_lines = [
+        f"Hi {name}!",
+        "",
+        f"No luck with {rejected_name} — that's completely normal, and it's not about you.",
+        "",
+        "Here are the other homes you were shown. Email or call them — most "
+        "befrienders try 2 or 3 before a match:",
+        "",
+    ]
+    for i, h in enumerate(homes, 1):
+        dist = h.get("distance_miles")
+        text_lines.append(
+            f"{i}. {h.get('name', 'Care home')}" + (f" ({dist} mi)" if dist is not None else "")
+        )
+        if h.get("phone"):
+            text_lines.append(f"   Call: {h['phone']}")
+        if h.get("email"):
+            text_lines.append(f"   Email: {h['email']}")
+        elif h.get("carehome_co_uk_url"):
+            text_lines.append(f"   Contact form: {h['carehome_co_uk_url']}")
+        text_lines.append("")
+    text_lines += [
+        "Want me to write the emails for you? Come back to the chat: "
+        "https://www.yopeybefriender.org",
+        "",
+        "— YOPEY",
+    ]
+    text_body = "\n".join(text_lines)
+
+    cards = []
+    for h in homes:
+        nm = html.escape(str(h.get("name", "Care home")))
+        dist = h.get("distance_miles")
+        dist_s = f" · {html.escape(str(dist))} mi" if dist is not None else ""
+        bits = []
+        if h.get("phone"):
+            ph = html.escape(str(h["phone"]))
+            bits.append(f"📞 <a href='tel:{ph}' style='color:#7c3aed;text-decoration:none;'>{ph}</a>")
+        if h.get("email"):
+            em = html.escape(str(h["email"]))
+            bits.append(f"✉️ <a href='mailto:{em}' style='color:#7c3aed;text-decoration:none;'>{em}</a>")
+        elif h.get("carehome_co_uk_url"):
+            url = html.escape(str(h["carehome_co_uk_url"]))
+            bits.append(f"<a href='{url}' style='color:#7c3aed;text-decoration:none;'>Contact via carehome.co.uk</a>")
+        contact_html = "<br>".join(bits) if bits else "See carehome.co.uk"
+        cards.append(
+            "<div style='margin:0 0 14px;padding:14px 16px;background:#faf5ff;"
+            "border:1px solid #ede9fe;border-radius:14px;'>"
+            f"<div style='font-weight:600;font-size:15px;'>{nm}"
+            f"<span style='color:#9ca3af;font-weight:400;'>{dist_s}</span></div>"
+            f"<div style='margin-top:6px;font-size:14px;line-height:1.7;'>{contact_html}</div>"
+            "</div>"
+        )
+    cards_html = "".join(cards)
+    name_html = html.escape(name)
+    rejected_html = html.escape(rejected_name)
+    html_body = f"""<!DOCTYPE html>
+<html><body style="font-family:-apple-system,system-ui,sans-serif;background:#fdf4ff;margin:0;padding:24px;color:#1f2937;">
+  <div style="max-width:520px;margin:24px auto;background:white;border-radius:24px;padding:28px;box-shadow:0 4px 24px rgba(124,58,237,0.1);">
+    <p style="margin:0 0 12px;font-size:16px;">Hi {name_html}!</p>
+    <p style="margin:0 0 6px;font-size:16px;line-height:1.6;">No luck with <strong>{rejected_html}</strong> — that's completely normal, and it's not about you.</p>
+    <p style="margin:0 0 18px;font-size:16px;line-height:1.6;">Here are the other homes you were shown. <strong>Email or give them a call</strong> — most befrienders try 2 or 3 before a match.</p>
+    {cards_html}
+    <div style="text-align:center;margin:22px 0 6px;">
+      <a href="https://www.yopeybefriender.org" style="display:inline-block;padding:13px 22px;background:#7c3aed;color:white;text-decoration:none;border-radius:14px;font-weight:600;font-size:15px;">Want me to write the emails? Come back to the chat →</a>
+    </div>
+    <p style="margin:24px 0 0;font-size:13px;color:#9ca3af;text-align:center;">— YOPEY Befriender · hello@yopey.org</p>
+  </div>
+</body></html>"""
+    return subject, text_body, html_body
+
+
+def send_other_homes_email(user: dict, rejected_name: str) -> bool:
+    """After a 'no', email the teen the other homes they were shown so they can
+    email or call them. No-op (False) if there's nothing useful to suggest."""
+    if not user.get("email"):
+        return False
+    homes = get_uncontacted_homes(user, limit=4)
+    if not homes:
+        return False
+    subject, text_body, html_body = render_other_homes_email(user, homes, rejected_name)
+    return send_email(user["email"], subject, text_body, html_body)
+
+
 # ============================================================
 # POST-ACCEPTANCE EMAIL DRIP
 # Fires when Tony marks a contact as accepted. The Day-0 welcome
@@ -3513,6 +3632,11 @@ def _handle_outcome_click(data: dict) -> HTMLResponse:
                     send_post_match_welcome(user_id, contact)
                 else:
                     update_user(user_id, status="searching")
+                    fresh_user = get_user(user_id)
+                    if fresh_user:
+                        send_other_homes_email(
+                            fresh_user, contact.get("care_home_name") or "that home"
+                        )
             except Exception as e:
                 print(f"[outcome] update failed: {e}")
 
@@ -3531,11 +3655,11 @@ def _handle_outcome_click(data: dict) -> HTMLResponse:
         body=(
             f"<p>Lots of homes can't take new visitors right now — it doesn't mean "
             f"anything about you.</p>"
-            f"<p>Let's try the next one. Come back to the chat and I'll find you another "
-            f"home nearby:</p>"
+            f"<p>You were shown other homes nearby — <strong>email or call those too.</strong> "
+            f"Come back to the chat and I'll write the emails for you:</p>"
             f"<p>👉 <a href='https://www.yopeybefriender.org'>yopeybefriender.org</a></p>"
-            f"<p>Most successful befrienders tried 2 or 3 homes before finding the right "
-            f"one. You're doing brilliantly. 💪</p>"
+            f"<p>Most befrienders tried 2 or 3 homes before a match. You're doing "
+            f"brilliantly. 💪</p>"
         ),
     ))
 
@@ -3927,6 +4051,7 @@ def test_reminder(
     Pick which one to preview:
       • series=nudge (default): contact chase-ups. stage 1..4 = day 3/5/7/10.
       • series=postmatch: post-acceptance drip. stage 1..5 = day 0/2/7/14/30.
+      • series=others: the "other homes near you" email sent after a 'no'.
 
     The sample care home is clearly labelled TEST and the buttons point at a
     non-existent contact, so clicking them won't touch real data.
@@ -3954,6 +4079,15 @@ def test_reminder(
             if series == "postmatch":
                 subject, text_body, html_body = render_post_match_email(
                     stage_def, fake_user, fake_contact
+                )
+            elif series == "others":
+                sample_homes = [
+                    {"name": "Glastonbury Court", "distance_miles": 0.6, "phone": "01284 767200", "email": "info@glastonburycourt.co.uk"},
+                    {"name": "Mount Farm House", "distance_miles": 1.1, "phone": "01638 666666", "carehome_co_uk_url": "https://www.google.com/search?q=site:carehome.co.uk+Mount+Farm+House"},
+                    {"name": "Ashlar House", "distance_miles": 1.8, "email": "manager@ashlarhouse.co.uk"},
+                ]
+                subject, text_body, html_body = render_other_homes_email(
+                    fake_user, sample_homes, "Sunrise Care Home (TEST)"
                 )
             else:
                 subject, text_body, html_body = render_nudge_email(

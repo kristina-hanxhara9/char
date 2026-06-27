@@ -2114,8 +2114,7 @@ def render_other_homes_email(
             text_lines.append(f"   Contact form: {h['carehome_co_uk_url']}")
         text_lines.append("")
     text_lines += [
-        "Want me to write the emails for you? Come back to the chat: "
-        "https://www.yopeybefriender.org",
+        f"Want me to write the emails for you? Come back to the chat: {FRONTEND_BASE_URL}",
         "",
         "— YOPEY",
     ]
@@ -2156,7 +2155,7 @@ def render_other_homes_email(
     <p style="margin:0 0 18px;font-size:16px;line-height:1.6;">Here are the other homes you were shown. <strong>Email or give them a call</strong> — most befrienders try 2 or 3 before a match.</p>
     {cards_html}
     <div style="text-align:center;margin:22px 0 6px;">
-      <a href="https://www.yopeybefriender.org" style="display:inline-block;padding:13px 22px;background:#7c3aed;color:white;text-decoration:none;border-radius:14px;font-weight:600;font-size:15px;">Want me to write the emails? Come back to the chat →</a>
+      <a href="{FRONTEND_BASE_URL}" style="display:inline-block;padding:13px 22px;background:#7c3aed;color:white;text-decoration:none;border-radius:14px;font-weight:600;font-size:15px;">Want me to write the emails? Come back to the chat →</a>
     </div>
     <p style="margin:24px 0 0;font-size:13px;color:#9ca3af;text-align:center;">— YOPEY Befriender · hello@yopey.org</p>
   </div>
@@ -2614,16 +2613,19 @@ def send_post_match_email(user: dict, contact: dict, stage_idx: int) -> bool:
     return send_email(user["email"], subject, text_body, html=html_body)
 
 
-def send_post_match_welcome(user_id: str, contact: dict) -> None:
+def send_post_match_welcome(user_id: str, contact: dict) -> bool:
     """
     Fire the Day-0 welcome immediately when Tony marks a contact accepted.
-    Sets matched_at and bumps post_match_stage to 1.
+    Sets matched_at and bumps post_match_stage to 1. Returns True only if the
+    welcome email was actually sent (False if no user, already welcomed, or the
+    send failed).
     """
     user = get_user(user_id)
     if not user:
-        return
+        return False
     if user.get("post_match_stage", 0) >= 1:
-        return  # already welcomed (e.g. previous match)
+        print(f"[post-match] Welcome skipped for user {redact_id(user_id)} — already matched")
+        return False  # already welcomed (e.g. previous match)
 
     if send_post_match_email(user, contact, stage_idx=0):
         update_user(
@@ -2633,6 +2635,9 @@ def send_post_match_welcome(user_id: str, contact: dict) -> None:
             status="matched",
         )
         print(f"[post-match] Welcome sent to user {redact_id(user_id)} ({redact_email(user['email'])})")
+        return True
+    print(f"[post-match] Welcome NOT sent for user {redact_id(user_id)} — send failed")
+    return False
 
 
 def send_post_match_drip() -> int:
@@ -3598,6 +3603,7 @@ def _handle_outcome_click(data: dict) -> HTMLResponse:
     # which aren't valid UUIDs — render the real response page without touching
     # the database so the flow can be previewed safely.
     is_test = user_id == "test-user" or contact_id == "test-contact"
+    welcomed = True  # whether the post-match welcome email actually went out
 
     if is_test:
         home_name = "Sunrise Care Home (TEST)"
@@ -3629,7 +3635,7 @@ def _handle_outcome_click(data: dict) -> HTMLResponse:
                     {"reply_received": True, "outcome": outcome}
                 ).eq("id", contact_id).execute()
                 if outcome == "accepted":
-                    send_post_match_welcome(user_id, contact)
+                    welcomed = send_post_match_welcome(user_id, contact)
                 else:
                     update_user(user_id, status="searching")
                     fresh_user = get_user(user_id)
@@ -3641,13 +3647,23 @@ def _handle_outcome_click(data: dict) -> HTMLResponse:
                 print(f"[outcome] update failed: {e}")
 
     if outcome == "accepted":
+        if welcomed:
+            followup = (
+                "<p>I've just sent you another email with everything you need before "
+                "your first visit (DBS check, training videos, conversation starters). "
+                "Keep an eye on your inbox.</p>"
+            )
+        else:
+            followup = (
+                "<p>Come back to the chat and I'll get you ready for your first visit — "
+                "the DBS check, what to expect, and conversation starters:</p>"
+                f"<p>👉 <a href='{FRONTEND_BASE_URL}'>Open the chat</a></p>"
+            )
         return HTMLResponse(content=RESPONSE_PAGE_TEMPLATE.format(
             title="Brilliant news! 🎉",
             body=(
                 f"<p>Amazing — <strong>{html.escape(home_name)}</strong> said yes!</p>"
-                f"<p>I've just sent you another email with everything you need before "
-                f"your first visit (DBS check, training videos, conversation starters). "
-                f"Keep an eye on your inbox.</p>"
+                + followup
             ),
         ))
     return HTMLResponse(content=RESPONSE_PAGE_TEMPLATE.format(
@@ -3657,7 +3673,7 @@ def _handle_outcome_click(data: dict) -> HTMLResponse:
             f"anything about you.</p>"
             f"<p>You were shown other homes nearby — <strong>email or call those too.</strong> "
             f"Come back to the chat and I'll write the emails for you:</p>"
-            f"<p>👉 <a href='https://www.yopeybefriender.org'>yopeybefriender.org</a></p>"
+            f"<p>👉 <a href='{FRONTEND_BASE_URL}'>Open the chat</a></p>"
             f"<p>Most befrienders tried 2 or 3 homes before a match. You're doing "
             f"brilliantly. 💪</p>"
         ),

@@ -3603,10 +3603,13 @@ def _handle_outcome_click(data: dict) -> HTMLResponse:
     # which aren't valid UUIDs — render the real response page without touching
     # the database so the flow can be previewed safely.
     is_test = user_id == "test-user" or contact_id == "test-contact"
-    welcomed = True  # whether the post-match welcome email actually went out
+    welcomed = False   # only true if we actually send the welcome on THIS click
+    display = outcome  # which page to show — the recorded answer wins on a re-visit
+    already = False    # they had already answered this contact
 
     if is_test:
         home_name = "Sunrise Care Home (TEST)"
+        welcomed = True  # preview the happy-path welcome page
     else:
         if not supabase:
             return HTMLResponse(content=RESPONSE_PAGE_INVALID, status_code=400)
@@ -3628,8 +3631,12 @@ def _handle_outcome_click(data: dict) -> HTMLResponse:
         contact = contact_res.data[0]
         home_name = contact.get("care_home_name") or "the care home"
 
-        # Idempotent: don't double-trigger if they click twice
-        if not contact.get("reply_received"):
+        if contact.get("reply_received"):
+            # First answer stands. Show what's RECORDED, not whatever button they
+            # clicked this time (e.g. they clicked 'no', then later 'yes').
+            already = True
+            display = contact.get("outcome") or outcome
+        else:
             try:
                 supabase.table("contacts").update(
                     {"reply_received": True, "outcome": outcome}
@@ -3646,7 +3653,15 @@ def _handle_outcome_click(data: dict) -> HTMLResponse:
             except Exception as e:
                 print(f"[outcome] update failed: {e}")
 
-    if outcome == "accepted":
+    note = ""
+    if already:
+        note = (
+            f"<p style='color:#9ca3af;font-size:14px;margin-top:18px;'>"
+            f"(You'd already let us know about {html.escape(home_name)} — we're keeping "
+            f"your first answer. If that's changed, just tell me in the chat.)</p>"
+        )
+
+    if display == "accepted":
         if welcomed:
             followup = (
                 "<p>I've just sent you another email with everything you need before "
@@ -3663,7 +3678,7 @@ def _handle_outcome_click(data: dict) -> HTMLResponse:
             title="Brilliant news! 🎉",
             body=(
                 f"<p>Amazing — <strong>{html.escape(home_name)}</strong> said yes!</p>"
-                + followup
+                + followup + note
             ),
         ))
     return HTMLResponse(content=RESPONSE_PAGE_TEMPLATE.format(
@@ -3676,6 +3691,7 @@ def _handle_outcome_click(data: dict) -> HTMLResponse:
             f"<p>👉 <a href='{FRONTEND_BASE_URL}'>Open the chat</a></p>"
             f"<p>Most befrienders tried 2 or 3 homes before a match. You're doing "
             f"brilliantly. 💪</p>"
+            + note
         ),
     ))
 

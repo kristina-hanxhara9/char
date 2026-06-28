@@ -3603,9 +3603,7 @@ def _handle_outcome_click(data: dict) -> HTMLResponse:
     # which aren't valid UUIDs — render the real response page without touching
     # the database so the flow can be previewed safely.
     is_test = user_id == "test-user" or contact_id == "test-contact"
-    welcomed = False   # only true if we actually send the welcome on THIS click
-    display = outcome  # which page to show — the recorded answer wins on a re-visit
-    already = False    # they had already answered this contact
+    welcomed = False  # true only if the welcome email is sent on THIS click
 
     if is_test:
         home_name = "Sunrise Care Home (TEST)"
@@ -3630,38 +3628,31 @@ def _handle_outcome_click(data: dict) -> HTMLResponse:
             return HTMLResponse(content=RESPONSE_PAGE_INVALID, status_code=404)
         contact = contact_res.data[0]
         home_name = contact.get("care_home_name") or "the care home"
+        prev_outcome = contact.get("outcome")
 
-        if contact.get("reply_received"):
-            # First answer stands. Show what's RECORDED, not whatever button they
-            # clicked this time (e.g. they clicked 'no', then later 'yes').
-            already = True
-            display = contact.get("outcome") or outcome
-        else:
+        # Latest answer wins — a teen can correct a mis-click (e.g. 'no' then
+        # 'yes') and the change is recorded. Side-effects are guarded so we never
+        # re-send the welcome (post_match_stage guard) or re-spam other-homes
+        # (only when the answer actually moves INTO 'rejected').
+        changed = (not contact.get("reply_received")) or (prev_outcome != outcome)
+        if changed:
             try:
                 supabase.table("contacts").update(
                     {"reply_received": True, "outcome": outcome}
                 ).eq("id", contact_id).execute()
                 if outcome == "accepted":
+                    update_user(user_id, status="matched")
                     welcomed = send_post_match_welcome(user_id, contact)
                 else:
                     update_user(user_id, status="searching")
-                    fresh_user = get_user(user_id)
-                    if fresh_user:
-                        send_other_homes_email(
-                            fresh_user, contact.get("care_home_name") or "that home"
-                        )
+                    if prev_outcome != "rejected":
+                        fresh_user = get_user(user_id)
+                        if fresh_user:
+                            send_other_homes_email(fresh_user, home_name)
             except Exception as e:
                 print(f"[outcome] update failed: {e}")
 
-    note = ""
-    if already:
-        note = (
-            f"<p style='color:#9ca3af;font-size:14px;margin-top:18px;'>"
-            f"(You'd already let us know about {html.escape(home_name)} — we're keeping "
-            f"your first answer. If that's changed, just tell me in the chat.)</p>"
-        )
-
-    if display == "accepted":
+    if outcome == "accepted":
         if welcomed:
             followup = (
                 "<p>I've just sent you another email with everything you need before "
@@ -3678,7 +3669,7 @@ def _handle_outcome_click(data: dict) -> HTMLResponse:
             title="Brilliant news! 🎉",
             body=(
                 f"<p>Amazing — <strong>{html.escape(home_name)}</strong> said yes!</p>"
-                + followup + note
+                + followup
             ),
         ))
     return HTMLResponse(content=RESPONSE_PAGE_TEMPLATE.format(
@@ -3691,7 +3682,6 @@ def _handle_outcome_click(data: dict) -> HTMLResponse:
             f"<p>👉 <a href='{FRONTEND_BASE_URL}'>Open the chat</a></p>"
             f"<p>Most befrienders tried 2 or 3 homes before a match. You're doing "
             f"brilliantly. 💪</p>"
-            + note
         ),
     ))
 

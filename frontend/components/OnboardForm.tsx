@@ -138,7 +138,7 @@ export default function OnboardForm() {
           {step === 3 && "Almost there"}
         </h1>
         <p className="mt-1 text-gray-600 text-sm">
-          {step === 1 && "We'll find care homes within walking distance once we know where you are."}
+          {step === 1 && "We'll find care homes near you — with walking distance and time where available."}
           {step === 2 && "Ten quick questions — won't take more than a couple of minutes."}
           {step === 3 && "One last check, then we'll find care homes near you."}
         </p>

@@ -62,6 +62,11 @@ CQC_PARTNER_CODE = os.environ.get("CQC_PARTNER_CODE", "").strip()
 # Subscription key from CQC API portal (apply at api-portal.service.cqc.org.uk).
 # Without this, CQC returns 403 — we fall back to Gemini web search.
 CQC_SUBSCRIPTION_KEY = os.environ.get("CQC_SUBSCRIPTION_KEY", "").strip()
+# OpenRouteService key (free tier — sign up at openrouteservice.org). When set,
+# care-home distances become real WALKING distance + time (foot-walking matrix)
+# instead of straight-line "as the crow flies". Unset → honest straight-line
+# fallback, so the app works either way.
+ORS_API_KEY = os.environ.get("ORS_API_KEY", "").strip()
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "changeme")
 EMAIL_TOKEN_SECRET = os.environ.get("EMAIL_TOKEN_SECRET") or DASHBOARD_PASSWORD
 # Where safeguarding escalations are emailed. Should be YOPEY's named
@@ -293,11 +298,19 @@ def _geocode_school_via_nominatim(school_name: str) -> Optional[dict]:
         if pc_data.get("status") != 200 or not pc_data.get("result"):
             return None
         result = pc_data["result"][0]
+        # Keep Nominatim's PRECISE school coordinates as the primary lat/lng —
+        # distances measured from the actual school building, not the postcode
+        # centroid (which can sit hundreds of metres away and inflate the
+        # shortest journey). The postcode centroid is retained separately for
+        # reference / anything that needs the canonical postcode point.
         return {
             "postcode": result["postcode"],
-            "latitude": result["latitude"],
-            "longitude": result["longitude"],
+            "latitude": lat,
+            "longitude": lon,
+            "centroid_latitude": result["latitude"],
+            "centroid_longitude": result["longitude"],
             "admin_district": result.get("admin_district"),
+            "coord_precision": "exact",
         }
     except Exception as e:
         print(f"[geocode] postcodes.io reverse failed: {e}")
@@ -339,11 +352,16 @@ def _geocode_school_via_web_search(school_name: str) -> Optional[dict]:
     if "error" in validated:
         print(f"[geocode] Web search returned invalid postcode for {redact_school_name(school_name)}")
         return None
+    # Only the postcode centroid is available on this path (the model gives us a
+    # postcode, not a pinpoint), so precise == centroid here.
     return {
         "postcode": candidate,
         "latitude": validated["latitude"],
         "longitude": validated["longitude"],
+        "centroid_latitude": validated["latitude"],
+        "centroid_longitude": validated["longitude"],
         "admin_district": validated.get("admin_district"),
+        "coord_precision": "centroid",
     }
 
 
@@ -352,32 +370,52 @@ def _name_key(school_name: str) -> str:
     return re.sub(r"\s+", " ", school_name.strip().lower())
 
 
-def _check_school_cache(school_name: str) -> Optional[str]:
-    """Return a cached postcode for this school, or None."""
+def _check_school_cache(school_name: str) -> Optional[dict]:
+    """Return a cached {postcode, latitude, longitude} for this school, or None.
+    latitude/longitude are the PRECISE school coordinates when we resolved the
+    school via Nominatim (older rows may lack them → None)."""
     if not supabase:
         return None
     try:
         res = (
             supabase.table("school_postcodes")
-            .select("postcode")
+            .select("postcode, latitude, longitude")
             .eq("name_key", _name_key(school_name))
             .limit(1)
             .execute()
         )
-        return res.data[0]["postcode"] if res.data else None
+        if not res.data:
+            return None
+        row = res.data[0]
+        return {
+            "postcode": row["postcode"],
+            "latitude": row.get("latitude"),
+            "longitude": row.get("longitude"),
+        }
     except Exception:
         return None
 
 
-def _save_school_cache(school_name: str, postcode: str, source: str) -> None:
+def _save_school_cache(
+    school_name: str,
+    postcode: str,
+    source: str,
+    latitude: Optional[float] = None,
+    longitude: Optional[float] = None,
+) -> None:
     if not supabase:
         return
     try:
-        supabase.table("school_postcodes").upsert({
+        row: dict[str, Any] = {
             "name_key": _name_key(school_name),
             "postcode": postcode,
             "source": source,
-        }).execute()
+        }
+        # Only persist coords when they're the school's precise point (Nominatim).
+        if latitude is not None and longitude is not None:
+            row["latitude"] = latitude
+            row["longitude"] = longitude
+        supabase.table("school_postcodes").upsert(row).execute()
     except Exception as e:
         print(f"[school-cache] upsert failed: {e}")
 
@@ -394,20 +432,29 @@ def _geocode_school(school_name: str) -> Optional[dict]:
 
     # Cache: same school typed by the same teen (or a school we've seen
     # for any teen) returns its prior resolution instantly.
-    cached_postcode = _check_school_cache(school_name)
-    if cached_postcode:
-        validated = postcode_to_latlng(cached_postcode)
+    cached = _check_school_cache(school_name)
+    if cached:
+        validated = postcode_to_latlng(cached["postcode"])
         if "error" not in validated:
+            # Prefer the school's PRECISE coords if we stored them; else fall
+            # back to the postcode centroid from postcodes.io.
+            has_precise = cached.get("latitude") is not None and cached.get("longitude") is not None
             return {
-                "postcode": cached_postcode,
-                "latitude": validated["latitude"],
-                "longitude": validated["longitude"],
+                "postcode": cached["postcode"],
+                "latitude": cached["latitude"] if has_precise else validated["latitude"],
+                "longitude": cached["longitude"] if has_precise else validated["longitude"],
+                "centroid_latitude": validated["latitude"],
+                "centroid_longitude": validated["longitude"],
                 "admin_district": validated.get("admin_district"),
+                "coord_precision": "exact" if has_precise else "centroid",
             }
 
     nominatim = _geocode_school_via_nominatim(school_name)
     if nominatim:
-        _save_school_cache(school_name, nominatim["postcode"], "nominatim")
+        _save_school_cache(
+            school_name, nominatim["postcode"], "nominatim",
+            latitude=nominatim.get("latitude"), longitude=nominatim.get("longitude"),
+        )
         return nominatim
 
     print(f"[geocode] Nominatim found nothing for '{redact_school_name(school_name)}', trying web search")
@@ -431,62 +478,194 @@ def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float
     return R * 2 * math.asin(math.sqrt(a))
 
 
-def _fetch_cqc_care_homes(location: dict) -> list | dict:
-    """All registered care homes in the postcode's local authority, each with
-    a computed distance_miles, sorted nearest-first. Fetched ONCE so the
-    dispatcher's radius widening is an in-memory filter instead of repeated
-    API sweeps (serial details for a dense borough took minutes). Returns an
-    {"error": ...} dict on auth/transport failure so the caller can fall back
-    to web search — with a loud log if the subscription key is rejected."""
+def _offset_latlon(lat: float, lon: float, bearing_deg: float, dist_miles: float) -> tuple[float, float]:
+    """Approximate lat/lon a given distance and compass bearing from a point
+    (equirectangular; fine at these scales for picking sample points)."""
+    dlat = dist_miles / 69.0
+    dlon = dist_miles / (69.0 * max(math.cos(math.radians(lat)), 1e-6))
+    b = math.radians(bearing_deg)
+    return lat + dlat * math.cos(b), lon + dlon * math.sin(b)
+
+
+def _admin_districts_within_radius(lat: float, lon: float, radius_miles: float) -> list[str]:
+    """Distinct postcodes.io admin_districts covering a disc of ~radius_miles
+    around (lat, lon), so care homes just over a council boundary (physically
+    the closest to a school) aren't excluded by a single-authority filter.
+
+    postcodes.io's single reverse-geocode `radius` param maxes at 2000 m — far
+    short of a 10-mile disc — so we sample a ring/grid of points and resolve
+    them in ONE bulk reverse-geocode POST (up to 100 lookups per request). On
+    any failure we degrade to just the origin's own district: never worse than
+    the previous single-authority behaviour."""
+    # Origin + 8 compass bearings at a few radii out to the edge of the disc.
+    points: list[tuple[float, float]] = [(lat, lon)]
+    ring_dists = sorted({3.0, 6.0, float(radius_miles)})
+    for d in ring_dists:
+        if d <= 0:
+            continue
+        for bearing in range(0, 360, 45):
+            points.append(_offset_latlon(lat, lon, bearing, d))
+
+    districts: list[str] = []
+    try:
+        resp = requests.post(
+            "https://api.postcodes.io/postcodes",
+            json={
+                "geolocations": [
+                    {"longitude": p_lon, "latitude": p_lat, "radius": 2000, "limit": 1}
+                    for (p_lat, p_lon) in points
+                ]
+            },
+            timeout=10,
+        )
+        data = resp.json()
+        if data.get("status") == 200:
+            for entry in data.get("result", []) or []:
+                matches = (entry or {}).get("result") or []
+                if matches:
+                    ad = matches[0].get("admin_district")
+                    if ad and ad not in districts:
+                        districts.append(ad)
+    except Exception as e:
+        print(f"[geocode] neighbouring-authority discovery failed: {e}")
+
+    return districts if districts else []
+
+
+def _walking_matrix(
+    origin: tuple[float, float], destinations: list[tuple[float, float]]
+) -> Optional[list[tuple[float, int]]]:
+    """OpenRouteService foot-walking matrix: one origin × N destinations in a
+    single call. Returns [(walking_miles, walking_minutes), ...] aligned to
+    `destinations`, or None on any failure / missing key so the caller falls
+    back to straight-line distance. Gated on ORS_API_KEY."""
+    if not ORS_API_KEY or not destinations:
+        return None
+    # ORS expects [lon, lat]; source index 0 is the origin.
+    locations = [[origin[1], origin[0]]] + [[d[1], d[0]] for d in destinations]
+    try:
+        r = requests.post(
+            "https://api.openrouteservice.org/v2/matrix/foot-walking",
+            headers={"Authorization": ORS_API_KEY, "Content-Type": "application/json"},
+            json={
+                "locations": locations,
+                "sources": [0],
+                "destinations": list(range(1, len(locations))),
+                "metrics": ["distance", "duration"],
+                "units": "mi",
+            },
+            timeout=12,
+        )
+        if r.status_code != 200:
+            print(f"[ors] matrix failed ({r.status_code}) — falling back to straight-line")
+            return None
+        d = r.json()
+        dist_row = (d.get("distances") or [[]])[0]
+        dur_row = (d.get("durations") or [[]])[0]
+        if not dist_row or len(dist_row) != len(destinations):
+            return None
+        out: list[tuple[float, int]] = []
+        for mi, sec in zip(dist_row, dur_row):
+            # ORS returns null for an unroutable pair — skip walking for it.
+            if mi is None:
+                return None
+            minutes = round(sec / 60) if sec is not None else 0
+            out.append((round(mi, 1), minutes))
+        return out
+    except Exception as e:
+        print(f"[ors] error: {e} — falling back to straight-line")
+        return None
+
+
+# Safety ceiling on how many care-home detail records we fetch per search.
+# The CQC list endpoint returns IDs with NO coordinates, so we can't pre-filter
+# by distance — every candidate must be detailed to know its distance. 800
+# fully covers a school's own authority plus its neighbours within 10 miles
+# while staying bounded (was an unsafe arbitrary 150 that silently dropped the
+# nearest home when it happened to sit past index 150 in CQC's ordering).
+MAX_CANDIDATE_IDS = 800
+
+
+def _fetch_cqc_care_homes(location: dict, max_radius: float = 10) -> list | dict:
+    """All registered care homes in the postcode's local authority AND every
+    neighbouring authority within `max_radius` miles, each with a computed
+    distance_miles, sorted nearest-first. Fetched ONCE so the dispatcher's
+    radius widening is an in-memory filter instead of repeated API sweeps.
+    Returns an {"error": ...} dict on auth/transport failure so the caller can
+    fall back to web search — with a loud log if the subscription key is
+    rejected."""
     user_lat = location["latitude"]
     user_lng = location["longitude"]
-    local_authority = location["admin_district"]
+
+    # A care home just over a council boundary can be the CLOSEST to a school,
+    # yet a single-authority filter would exclude it (the St Peter's House /
+    # Bury St Edmunds case). Query the school's own authority plus every
+    # authority whose area falls within the search disc. Always include the
+    # origin's own district so a discovery failure is never worse than before.
+    districts: list[str] = []
+    origin_district = location.get("admin_district")
+    if origin_district:
+        districts.append(origin_district)
+    for ad in _admin_districts_within_radius(user_lat, user_lng, max_radius):
+        if ad not in districts:
+            districts.append(ad)
+    if not districts:
+        return {"error": "No local authority for this location", "results": []}
 
     headers = {"Ocp-Apim-Subscription-Key": CQC_SUBSCRIPTION_KEY}
     common_params: dict[str, Any] = (
         {"partnerCode": CQC_PARTNER_CODE} if CQC_PARTNER_CODE else {}
     )
 
-    # Filter by localAuthority first — drastically reduces the result set vs
-    # paginating through all of England. List pages are cheap (ids only here);
-    # the expensive per-home details are fetched in parallel below.
+    # Collect candidate IDs across every relevant authority, deduped by
+    # locationId. List pages are cheap (ids only); the expensive per-home
+    # details are fetched in parallel below.
     loc_ids: list[str] = []
     seen_ids: set[str] = set()
-    page = 1
-    while page <= 6:
-        try:
-            resp = requests.get(
-                "https://api.service.cqc.org.uk/public/v1/locations",
-                params={
-                    **common_params,
-                    "careHome": "Y",
-                    "page": page,
-                    "perPage": 50,
-                    "localAuthority": local_authority,
-                },
-                headers=headers,
-                timeout=20,
-            )
-            if resp.status_code in (401, 403):
-                print(
-                    f"[cqc] subscription key rejected ({resp.status_code}) — "
-                    "check CQC_SUBSCRIPTION_KEY in Render"
-                )
-                return {"error": f"CQC auth failed ({resp.status_code})", "results": []}
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            return {"error": f"CQC API error: {e}", "results": []}
-
-        locations = data.get("locations", [])
-        if not locations:
+    for local_authority in districts:
+        if len(seen_ids) >= MAX_CANDIDATE_IDS:
             break
-        for loc in locations:
-            loc_id = loc.get("locationId")
-            if loc_id and loc_id not in seen_ids:
-                seen_ids.add(loc_id)
-                loc_ids.append(loc_id)
-        page += 1
+        page = 1
+        while len(seen_ids) < MAX_CANDIDATE_IDS:
+            try:
+                resp = requests.get(
+                    "https://api.service.cqc.org.uk/public/v1/locations",
+                    params={
+                        **common_params,
+                        "careHome": "Y",
+                        "page": page,
+                        "perPage": 50,
+                        "localAuthority": local_authority,
+                    },
+                    headers=headers,
+                    timeout=20,
+                )
+                if resp.status_code in (401, 403):
+                    print(
+                        f"[cqc] subscription key rejected ({resp.status_code}) — "
+                        "check CQC_SUBSCRIPTION_KEY in Render"
+                    )
+                    return {"error": f"CQC auth failed ({resp.status_code})", "results": []}
+                resp.raise_for_status()
+                data = resp.json()
+            except Exception as e:
+                # One bad authority shouldn't blank the whole result — the
+                # school's own district may still return fine. Skip and move on.
+                print(f"[cqc] list error for '{local_authority}': {e}")
+                break
+
+            locations = data.get("locations", [])
+            if not locations:
+                break
+            for loc in locations:
+                loc_id = loc.get("locationId")
+                if loc_id and loc_id not in seen_ids:
+                    seen_ids.add(loc_id)
+                    loc_ids.append(loc_id)
+            page += 1
+
+    if not loc_ids:
+        return {"error": "CQC returned no care homes for these authorities", "results": []}
 
     def _detail(loc_id: str) -> Optional[dict]:
         try:
@@ -501,8 +680,11 @@ def _fetch_cqc_care_homes(location: dict) -> list | dict:
             return None
 
     care_homes: list[dict] = []
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        for detail in executor.map(_detail, loc_ids[:150]):
+    # Detail EVERY candidate (no arbitrary slice) so the true nearest is never
+    # dropped before its distance is known. max_workers raised to keep the
+    # wider fetch's wall-clock reasonable.
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        for detail in executor.map(_detail, loc_ids):
             if not detail:
                 continue
             lat = detail.get("onspdLatitude")
@@ -563,7 +745,24 @@ def _fetch_cqc_care_homes(location: dict) -> list | dict:
                 "phone": detail.get("mainPhoneNumber", "Not listed"),
                 "website": detail.get("website") or None,
                 "manager": manager_name or "the Manager (not listed)",
+                # Provenance for the manager name: it came from the CQC register's
+                # "Registered Manager" field, which can lag reality. A live
+                # carehome.co.uk cross-check (_enrich_with_managers) may override
+                # this later and flip manager_source to "carehome_co_uk".
+                "manager_source": "cqc_register" if manager_name else None,
+                "manager_checked_against_carehome": False,
+                "manager_note": (
+                    f"Manager per the CQC register (last inspection "
+                    f"{last_inspection or 'date unknown'}) — may be out of date; "
+                    f"verify on carehome.co.uk"
+                ) if manager_name else None,
                 "distance_miles": round(distance, 1),
+                # Straight-line for now; the dispatcher upgrades the shortlist to
+                # real WALKING distance via ORS when ORS_API_KEY is set. Precise
+                # home coords kept so the walking matrix can be built.
+                "distance_source": "straight_line",
+                "_lat": lat,
+                "_lng": lng,
                 "cqc_rating": detail.get("currentRatings", {})
                     .get("overall", {})
                     .get("rating", "Not yet rated"),
@@ -842,19 +1041,37 @@ def _normalize_postcode(postcode: str) -> str:
     return postcode.strip().upper().replace(" ", "")
 
 
+def _origin_key(origin_lat: Optional[float], origin_lng: Optional[float]) -> str:
+    """Cache discriminator for the distance ORIGIN. Distances now depend on
+    whether we measured from a precise school point or the postcode centroid,
+    so two callers with the same postcode but different origins must not share a
+    cached result. ~110 m precision is plenty to bucket identical origins."""
+    if origin_lat is None or origin_lng is None:
+        return "centroid"
+    return f"{origin_lat:.3f},{origin_lng:.3f}"
+
+
 # Bump when the cached payload shape/links change — old-format rows are
 # skipped and refreshed on next search. v2: postcoded directory URLs.
 # v3: CQC-primary cutover (forces web-era caches to refresh via CQC).
 # v4: CQC-rating provenance — web-fallback homes no longer carry a stated
 # rating (old v3 web rows still hold a model-asserted one), so refresh them.
-SEARCH_CACHE_VERSION = 4
+# v5: multi-authority CQC discovery (wider result set), walking distances +
+# time, and carehome.co.uk manager cross-check — all change the payload.
+SEARCH_CACHE_VERSION = 5
 
 
-def _check_search_cache(postcode: str, radius_miles: int, max_results: int) -> Optional[dict]:
+def _check_search_cache(
+    postcode: str,
+    radius_miles: int,
+    max_results: int,
+    origin_key: str = "centroid",
+) -> Optional[dict]:
     """
     Return a recent cached search result if any cached row's actual_radius_miles
     is at least the requested radius_miles AND its max_results is ≥ requested.
     A wider-area cached search is a valid superset for a narrower request.
+    Rows are scoped to the same distance origin (precise school vs centroid).
     """
     if not supabase:
         return None
@@ -862,8 +1079,9 @@ def _check_search_cache(postcode: str, radius_miles: int, max_results: int) -> O
     try:
         res = (
             supabase.table("care_home_searches")
-            .select("payload, radius_miles, max_results, cached_at")
+            .select("payload, radius_miles, max_results, cached_at, origin_key")
             .eq("postcode", _normalize_postcode(postcode))
+            .eq("origin_key", origin_key)
             .gte("cached_at", cutoff)
             .order("cached_at", desc=True)
             .limit(10)
@@ -889,7 +1107,11 @@ def _check_search_cache(postcode: str, radius_miles: int, max_results: int) -> O
 
 
 def _save_search_to_cache(
-    postcode: str, radius_miles: int, max_results: int, result: dict
+    postcode: str,
+    radius_miles: int,
+    max_results: int,
+    result: dict,
+    origin_key: str = "centroid",
 ) -> None:
     if not supabase or not result.get("results"):
         return
@@ -898,6 +1120,7 @@ def _save_search_to_cache(
             "postcode": _normalize_postcode(postcode),
             "radius_miles": radius_miles,
             "max_results": max_results,
+            "origin_key": origin_key,
             "source": result.get("source"),
             "payload": {**result, "cache_version": SEARCH_CACHE_VERSION},
         }).execute()
@@ -1004,7 +1227,65 @@ def _enrich_with_emails(homes: list[dict], fallback_postcode: str) -> None:
             seen_emails.add(em)
 
 
-def search_care_homes(postcode: str, radius_miles: int = 1, max_results: int = 5) -> dict:
+def _enrich_with_managers(homes: list[dict], fallback_postcode: str) -> None:
+    """Cross-check each home's manager against carehome.co.uk (the more current
+    source) in parallel, and stamp provenance. Mutates each home dict:
+      • manager                          → carehome.co.uk name if confidently found, else CQC value
+      • manager_source                   → "carehome_co_uk" | "cqc_register" | None
+      • manager_checked_against_carehome → bool
+      • manager_note                     → short "verify on carehome.co.uk" caveat
+    Never invents a name — falls back to the CQC value on any miss. Mirrors
+    _enrich_with_emails so a single failed lookup can't nuke the batch."""
+    if not homes:
+        return
+
+    def lookup(home: dict) -> dict:
+        manager = home.get("manager") or ""
+        cqc_manager = manager if "not listed" not in manager.lower() else None
+        return find_manager_via_web_search(
+            care_home_name=home.get("name") or "",
+            postcode=home.get("postcode") or fallback_postcode,
+            cqc_manager=cqc_manager,
+        )
+
+    results: list[dict] = [{} for _ in homes]
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_index = {executor.submit(lookup, home): i for i, home in enumerate(homes)}
+        for fut in as_completed(future_to_index):
+            idx = future_to_index[fut]
+            try:
+                results[idx] = fut.result()
+            except Exception as e:
+                print(f"[search] manager cross-check failed for home #{idx}: {e}")
+
+    for home, res in zip(homes, results):
+        name = res.get("manager")
+        source = res.get("source")
+        if name and "not listed" not in name.lower():
+            home["manager"] = name
+            home["manager_source"] = source
+            home["manager_checked_against_carehome"] = bool(res.get("checked"))
+            if source == "carehome_co_uk":
+                home["manager_note"] = "Manager per carehome.co.uk — verify before sending."
+            else:
+                # CQC value retained (no confident carehome.co.uk match).
+                home.setdefault(
+                    "manager_note",
+                    "Manager per the CQC register — may be out of date; verify on carehome.co.uk.",
+                )
+        else:
+            # No usable name from either source.
+            home["manager_source"] = None
+            home["manager_checked_against_carehome"] = bool(res.get("checked"))
+
+
+def search_care_homes(
+    postcode: str,
+    radius_miles: int = 1,
+    max_results: int = 5,
+    origin_lat: Optional[float] = None,
+    origin_lng: Optional[float] = None,
+) -> dict:
     """
     Find care homes near a UK postcode. Default radius is 1 mile (Tony's spec:
     'within a mile of where they are in education and/or live').
@@ -1018,17 +1299,20 @@ def search_care_homes(postcode: str, radius_miles: int = 1, max_results: int = 5
     Result envelope includes `actual_radius_miles` so the bot can mention if it
     had to look further out than the teen's immediate area.
     """
+    origin_key = _origin_key(origin_lat, origin_lng)
     # Cache check uses the requested (starting) radius — most teens search the
-    # same postcode again next session, so a hit returns instantly.
-    cached = _check_search_cache(postcode, radius_miles, max_results)
+    # same postcode again next session, so a hit returns instantly. Scoped to
+    # the distance origin so a precise-school result isn't served to a
+    # centroid-origin caller (and vice versa).
+    cached = _check_search_cache(postcode, radius_miles, max_results, origin_key)
     if cached:
         return cached
 
-    # Coalesce concurrent searches for the same postcode: the wizard's
+    # Coalesce concurrent searches for the same postcode+origin: the wizard's
     # precompute usually starts ~30-60s before the chat auto-search arrives.
     # The late caller waits for the in-flight search and reuses its cached
     # result instead of paying for (and waiting on) a full duplicate.
-    key = _normalize_postcode(postcode)
+    key = f"{_normalize_postcode(postcode)}|{origin_key}"
     with _INFLIGHT_LOCK:
         evt = _INFLIGHT_SEARCHES.get(key)
         is_owner = evt is None
@@ -1037,13 +1321,15 @@ def search_care_homes(postcode: str, radius_miles: int = 1, max_results: int = 5
             _INFLIGHT_SEARCHES[key] = evt
     if not is_owner:
         evt.wait(timeout=120)
-        cached = _check_search_cache(postcode, radius_miles, max_results)
+        cached = _check_search_cache(postcode, radius_miles, max_results, origin_key)
         if cached:
             return cached
         # Owner failed or found nothing cacheable — fall through and search.
 
     try:
-        return _search_care_homes_uncached(postcode, radius_miles, max_results)
+        return _search_care_homes_uncached(
+            postcode, radius_miles, max_results, origin_lat, origin_lng
+        )
     finally:
         if is_owner:
             with _INFLIGHT_LOCK:
@@ -1055,7 +1341,40 @@ _INFLIGHT_SEARCHES: dict[str, threading.Event] = {}
 _INFLIGHT_LOCK = threading.Lock()
 
 
-def _search_care_homes_uncached(postcode: str, radius_miles: int, max_results: int) -> dict:
+def _apply_walking_distances(homes: list[dict], origin_lat: float, origin_lng: float, max_radius: float) -> None:
+    """Upgrade the nearest homes' straight-line distances to real WALKING
+    distance + time via ORS, in place. Pre-filters by straight-line to keep the
+    matrix tiny (walking ≥ straight-line, so a home slightly past the straight-
+    line radius can still matter — keep a generous shortlist). No-ops when ORS
+    is unavailable, leaving honest straight-line values."""
+    shortlist = [h for h in homes if (h.get("distance_miles") or 0) <= max_radius][:15]
+    dests = [(h["_lat"], h["_lng"]) for h in shortlist if h.get("_lat") and h.get("_lng")]
+    if not dests:
+        return
+    walked = _walking_matrix((origin_lat, origin_lng), dests)
+    if not walked:
+        return
+    for h, (miles, minutes) in zip(shortlist, walked):
+        h["straight_line_miles"] = h.get("distance_miles")
+        h["distance_miles"] = miles
+        h["walking_minutes"] = minutes
+        h["distance_source"] = "walking"
+
+
+def _strip_internal_fields(homes: list[dict]) -> None:
+    """Drop internal-only keys (raw coords) before a result is cached/returned."""
+    for h in homes:
+        h.pop("_lat", None)
+        h.pop("_lng", None)
+
+
+def _search_care_homes_uncached(
+    postcode: str,
+    radius_miles: int,
+    max_results: int,
+    origin_lat: Optional[float] = None,
+    origin_lng: Optional[float] = None,
+) -> dict:
     location = postcode_to_latlng(postcode)
     if "error" in location:
         return {
@@ -1064,6 +1383,14 @@ def _search_care_homes_uncached(postcode: str, radius_miles: int, max_results: i
             "error": location["error"],
             "results": [],
         }
+
+    # Measure distances from the school's PRECISE point when we have it (passed
+    # in from geocoding), else the postcode centroid.
+    if origin_lat is not None and origin_lng is not None:
+        location["latitude"] = origin_lat
+        location["longitude"] = origin_lng
+        location["coord_precision"] = "exact"
+    origin_key = _origin_key(origin_lat, origin_lng)
 
     # Auto-expand from the requested starting radius
     # If radius_miles=1, sequence is [1, 2, 3, 5, 10]
@@ -1075,28 +1402,34 @@ def _search_care_homes_uncached(postcode: str, radius_miles: int, max_results: i
     max_radius = steps[-1]
 
     if CQC_SUBSCRIPTION_KEY:
-        cqc_homes = _fetch_cqc_care_homes(location)
+        cqc_homes = _fetch_cqc_care_homes(location, max_radius=max_radius)
         if isinstance(cqc_homes, dict):
             print(f"[search] CQC failed, using web fallback: {str(cqc_homes.get('error', ''))[:80]}")
         else:
-            # One authority-wide fetch; radius widening is a pure in-memory
-            # filter (homes arrive sorted nearest-first).
+            # Upgrade the nearest homes to real walking distance/time (ORS),
+            # then re-sort so the radius steps below filter on walking miles.
+            _apply_walking_distances(cqc_homes, location["latitude"], location["longitude"], max_radius)
+            cqc_homes.sort(key=lambda h: h["distance_miles"])
+            # Multi-authority fetch; radius widening is a pure in-memory filter.
             for step in steps:
                 within = [h for h in cqc_homes if h["distance_miles"] <= step]
                 if within:
+                    results = within[:max_results]
+                    _strip_internal_fields(results)
                     attempt = {
                         "search_area": location.get("admin_district") or postcode,
                         "source": "cqc",
-                        "results": within[:max_results],
+                        "results": results,
                         "actual_radius_miles": step,
                         "requested_radius_miles": radius_miles,
                     }
                     if step > radius_miles:
                         print(f"[search] auto-expanded {redact_postcode(postcode)} from {radius_miles}mi → {step}mi to find results")
                     _enrich_with_emails(attempt["results"], postcode)
-                    _save_search_to_cache(postcode, radius_miles, max_results, attempt)
+                    _enrich_with_managers(attempt["results"], postcode)
+                    _save_search_to_cache(postcode, radius_miles, max_results, attempt, origin_key)
                     return attempt
-            # No homes within 10 miles in this authority → fall through to the web.
+            # No homes within 10 miles in these authorities → fall through to web.
 
     attempt = _search_care_homes_via_web(
         postcode, max_results, radius_miles=max_radius, prefetched_location=location
@@ -1114,10 +1447,15 @@ def _search_care_homes_uncached(postcode: str, radius_miles: int, max_results: i
         attempt["actual_radius_miles"] = (
             max(radius_miles, math.ceil(furthest)) if furthest else max_radius
         )
+        # Web-path distances are unvalidated model estimates — mark them so the
+        # bot renders them with the weakest wording (never as walking data).
+        for h in results:
+            h.setdefault("distance_source", "straight_line_estimate")
         _enrich_with_emails(results, postcode)
+        _enrich_with_managers(results, postcode)
     else:
         attempt["actual_radius_miles"] = max_radius
-    _save_search_to_cache(postcode, radius_miles, max_results, attempt)
+    _save_search_to_cache(postcode, radius_miles, max_results, attempt, origin_key)
     return attempt
 
 
@@ -1264,6 +1602,146 @@ def _save_email_to_cache(
         }).execute()
     except Exception as e:
         print(f"[email-cache] insert failed: {e}")
+
+
+# ---- Manager cross-check (carehome.co.uk) ----------------------------------
+# The CQC register's "Registered Manager" often lags the manager currently
+# shown on carehome.co.uk. We cross-check the more-current directory, cache the
+# result (like emails), and always keep the CQC value as a safe fallback.
+
+def _looks_like_person_name(value: str) -> bool:
+    """Cheap sanity gate so a grounded-search miss can't inject junk as a name:
+    letters + spaces/hyphens/apostrophes/dots, at least two words, no digits,
+    no URLs/emails."""
+    if not value:
+        return False
+    if any(c.isdigit() for c in value) or "@" in value or "http" in value.lower():
+        return False
+    if not re.fullmatch(r"[A-Za-z][A-Za-z .'\-]{1,78}", value):
+        return False
+    return len(value.split()) >= 2
+
+
+def _check_manager_cache(care_home_name: str, postcode: Optional[str] = None) -> Optional[dict]:
+    """Cached manager for a home, filtered by outward code to avoid same-name
+    cross-region collisions (mirrors _check_email_cache)."""
+    if not supabase:
+        return None
+    try:
+        res = (
+            supabase.table("care_home_managers")
+            .select("*")
+            .ilike("care_home_name", care_home_name)
+            .limit(10)
+            .execute()
+        )
+    except Exception as e:
+        print(f"[manager-cache] lookup failed: {e}")
+        return None
+    if not res.data:
+        return None
+
+    user_outward = _outward_code(postcode)
+    row: Optional[dict] = None
+    if user_outward:
+        for r in res.data:
+            if _outward_code(r.get("postcode")) == user_outward:
+                row = r
+                break
+        if row is None:
+            return None
+    else:
+        if len(res.data) == 1:
+            row = res.data[0]
+        else:
+            return None
+
+    try:
+        supabase.table("care_home_managers").update(
+            {"last_used_at": _now_iso()}
+        ).eq("id", row["id"]).execute()
+    except Exception:
+        pass
+
+    return {
+        "manager": row["manager"],
+        "source": row.get("source") or "carehome_co_uk",
+        "verified": bool(row.get("verified")),
+    }
+
+
+def _save_manager_to_cache(
+    care_home_name: str,
+    manager: str,
+    postcode: Optional[str],
+    source: str,
+    notes: Optional[str] = None,
+) -> None:
+    if not supabase:
+        return
+    try:
+        supabase.table("care_home_managers").insert({
+            "care_home_name": care_home_name,
+            "postcode": postcode,
+            "manager": manager,
+            "source": source,
+            "notes": notes,
+            "last_used_at": _now_iso(),
+        }).execute()
+    except Exception as e:
+        print(f"[manager-cache] insert failed: {e}")
+
+
+def find_manager_via_web_search(
+    care_home_name: str,
+    postcode: Optional[str],
+    cqc_manager: Optional[str],
+) -> dict:
+    """Cross-check the current manager on carehome.co.uk.
+
+    Returns {manager, source ("carehome_co_uk"|"cqc_register"), checked: bool}.
+    Falls back to the CQC value (never invents) when Gemini is unavailable or
+    no confident name is found. Results are cached like emails."""
+    fallback = {
+        "manager": cqc_manager,
+        "source": "cqc_register" if cqc_manager else None,
+        "checked": False,
+    }
+    if not care_home_name:
+        return fallback
+
+    cached = _check_manager_cache(care_home_name, postcode=postcode)
+    if cached and cached.get("manager"):
+        return {"manager": cached["manager"], "source": cached["source"], "checked": True}
+
+    if not gemini_client:
+        return fallback
+
+    safe_name = _inline_safe(care_home_name, 120)
+    locator = _inline_safe(postcode or "UK", 60)
+    prompt = (
+        f"On carehome.co.uk, find the profile page for the UK care home "
+        f"'{safe_name}' in {locator}. What is the name of its CURRENT manager "
+        f"(sometimes labelled 'Manager' or 'Registered Manager') as shown on "
+        f"that carehome.co.uk page? Reply with ONLY the manager's full name and "
+        f"nothing else. If the page doesn't clearly show a manager, or you "
+        f"cannot find the home on carehome.co.uk, reply exactly 'UNKNOWN'. "
+        f"Never guess or invent a name."
+    )
+    try:
+        text = _grounded_search(prompt)
+    except Exception as e:
+        print(f"[manager] web search failed for {safe_name}: {e}")
+        return fallback
+
+    candidate = _inline_safe(text, 80)
+    # Strip a common "Manager:" style prefix the model sometimes adds.
+    candidate = re.sub(r"(?i)^\s*(registered\s+)?manager\s*[:\-]\s*", "", candidate).strip()
+    if "UNKNOWN" in candidate.upper() or not _looks_like_person_name(candidate):
+        return fallback
+
+    _save_manager_to_cache(care_home_name, candidate, postcode, source="carehome_co_uk")
+    return {"manager": candidate, "source": "carehome_co_uk", "checked": True}
 
 
 # Domains that show up in scraped HTML but aren't the care home's contact email
@@ -2897,10 +3375,30 @@ def execute_tool(tool_name: str, args: dict, user_id: str, trigger_message: Opti
         return json.dumps({"status": "recorded", "internal": result})
 
     if tool_name == "search_care_homes":
+        searched_postcode = args["postcode"]
+        # When the teen is searching near their SCHOOL and we've resolved that
+        # school to a precise point, measure distances from the actual school
+        # building rather than the postcode centroid (more accurate walking
+        # distances). Only applies when the searched postcode is the school's.
+        origin_lat = origin_lng = None
+        user = get_user(user_id)
+        if user and user.get("search_preference") == "school" and user.get("school_name"):
+            cached_school = _check_school_cache(user["school_name"])
+            if (
+                cached_school
+                and cached_school.get("latitude") is not None
+                and cached_school.get("longitude") is not None
+                and _normalize_postcode(cached_school.get("postcode", ""))
+                == _normalize_postcode(searched_postcode)
+            ):
+                origin_lat = cached_school["latitude"]
+                origin_lng = cached_school["longitude"]
         results = search_care_homes(
-            postcode=args["postcode"],
+            postcode=searched_postcode,
             radius_miles=args.get("radius_miles", 10),
             max_results=args.get("max_results", 5),
+            origin_lat=origin_lat,
+            origin_lng=origin_lng,
         )
         return json.dumps(results)
 

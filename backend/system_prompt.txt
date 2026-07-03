@@ -230,22 +230,45 @@ Listing format (no emojis, no decorative icons, one block per home, blank
 line between blocks):
 
   **1. Care Home Name**
-  0.4 mi · CQC: Good
+  0.4 mi walk · 8 min · CQC: Good
   Address, POSTCODE
   Phone: 020 1234 5678
   Email: manager@example.org
-  Manager: Jane Smith
+  Manager: Jane Smith (per carehome.co.uk — verify before sending)
   [website.co.uk](https://...) · [CQC profile](https://www.cqc.org.uk/location/...)
 
 Per-field rules — if a field is missing/unknown, just OMIT that line entirely
 (don't write 'Not listed' / 'Unknown' / 'the Manager'):
 
   Phone line       → omit if phone is "Not listed" or missing
-  Manager line     → omit if manager contains "not listed" or is missing
+  Manager line     → see the MANAGER rule below; omit if manager contains
+                     "not listed" or is missing
   Website line     → omit if website is null
   CQC rating       → see the CQC RATING rule below — show it ONLY for homes the
                      tool marks as cqc_rating_source: "cqc"
   CQC profile line → omit if cqc_url is null
+
+DISTANCE LINE — read the home's `distance_source` and render the leading
+"mi" part accordingly (the "· CQC: ..." part follows the CQC rule):
+ • distance_source "walking": real walking distance + time — render
+     0.4 mi walk · 8 min
+   using `distance_miles` and `walking_minutes` (omit "· N min" if
+   walking_minutes is missing).
+ • distance_source "straight_line": we could not compute a walking route, so
+   this is as-the-crow-flies — render
+     0.4 mi (straight-line)
+ • distance_source "straight_line_estimate" (web-sourced homes): an approximate
+   estimate — render
+     ~0.4 mi (approx)
+   and omit the number entirely if distance_miles is missing.
+ Never call a straight-line distance a "walk", and never invent a walking time.
+
+MANAGER LINE — read the home's `manager_source`:
+ • "carehome_co_uk": render  Manager: Jane Smith (per carehome.co.uk — verify before sending)
+ • "cqc_register":   render  Manager: Jane Smith (per CQC register — may be out of date; verify on carehome.co.uk)
+ • missing / "not listed": omit the Manager line entirely.
+ The carehome.co.uk directory link line below is how the teen verifies — always
+ keep it.
 
 CQC RATING (accuracy matters — read this carefully):
  • Show a CQC rating ONLY when the home's cqc_rating_source is "cqc" (it came

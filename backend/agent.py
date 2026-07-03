@@ -4889,118 +4889,135 @@ def chat_endpoint(req: ChatRequest, request: Request):
 # ============================================================
 
 GUIDE_TEXT = """
-YOPEY BEFRIENDER — HOW THE AGENT WORKS (help guide)
+YOPEY BEFRIENDER, HOW THE AGENT WORKS (help guide)
 
 WHAT THE AGENT IS
-An AI chatbot that helps young people (aged 16-21) volunteer as dementia
-befrienders. It finds nearby CQC-registered care homes, drafts an introduction
-email the young person sends themselves, sends gentle reminder emails, and
-shares dementia-awareness training. A password-protected coordinator dashboard
-(at /dashboard) lets YOPEY staff track progress and review safeguarding alerts.
+An AI chatbot that helps young people (aged 16 to 21) volunteer as dementia
+befrienders. It finds nearby CQC registered care homes, drafts an introduction
+email the young person sends themselves, sends gentle reminder emails, polishes
+their visit reports afterwards, and shares dementia awareness training. A
+password protected coordinator dashboard (at /dashboard) lets YOPEY staff track
+progress and review safeguarding alerts.
 
 =====================================================================
 GUIDE FOR THE USER (the young volunteer using the chat)
 =====================================================================
 
 WHAT IT CAN HELP YOU WITH
-- Find care homes near your school/college or home (with walking distance and
-  time to each, when available).
-- Write a friendly introduction email to a care home manager, in your own name.
-- Remind you to follow up if you haven't heard back (after 3, 5, 7, 10 days).
-- Point you to free dementia-awareness training (e.g. Dementia Friends).
-- Encourage you and answer questions about befriending.
+• Find care homes near your school, college or home, with walking distance and
+  time to each, when available.
+• Write a friendly introduction email to a care home manager, in your own name.
+• Remind you to follow up if you have not heard back (after 3, 5, 7 and 10 days).
+• Polish a visit report after you have volunteered, so it reads clearly.
+• Point you to free dementia awareness training (for example Dementia Friends).
+• Encourage you and answer questions about befriending.
 Example questions you can ask:
   1. "Find care homes near IP33 3YU."
   2. "Can you help me write an email to the manager?"
-  3. "I'm nervous about my first visit — any tips?"
-  4. "What dementia training can I do?"
-  5. "The manager said yes — what do I do next?"
-It is good at: local care-home search, drafting emails, encouragement, and
-signposting training. It is NOT a medical or crisis service.
+  3. "I am nervous about my first visit, any tips?"
+  4. "Can you tidy up my visit report?"
+  5. "The manager said yes, what do I do next?"
+It is good at: local care home search, drafting emails, tidying visit reports,
+encouragement, and signposting training. It is NOT a medical or crisis service.
 
 HOW TO ACCESS IT
-Open the YOPEY Befriender website and press "Find a care home". You'll answer a
-few quick questions (first name, age, email, and your postcode or school), then
-you can start typing to the assistant. You can also reach it as a chat bubble on
-partner websites that have embedded it.
+Open the YOPEY Befriender website and press "Find a care home". You need to be
+16 or over. You answer a few quick questions (first name, age, email, and your
+postcode or school), and a short survey about attitudes to dementia that takes a
+couple of minutes, then you start typing to the assistant. If you leave and come
+back, you can pick up again through a link YOPEY emails you. It can also appear
+as a chat bubble on partner websites that have added it.
 
 HOW TO GET THE BEST OUT OF IT
-- Give it your postcode or school name so it can search the right area.
-- Be specific ("email in a warm, casual tone", "homes within 1 mile").
-- If an answer isn't quite right, just say so and ask it to try again or change
-  it ("make the email shorter", "search a bit wider").
-- You can always ask it to redo or explain anything.
+• Give it your postcode or school name so it searches the right area.
+• Be specific, for example "email in a warm, casual tone" or "homes within 1 mile".
+• If an answer is not quite right, say so and ask it to try again ("make the
+  email shorter", "search a bit wider").
+• You can always ask it to redo or explain anything.
 
-WHEN THE AGENT CAN'T HELP
-- If it doesn't know, or something feels wrong (a distance, a manager name),
-  double-check on carehome.co.uk or the CQC website, and tell your YOPEY
+WHEN THE AGENT CANNOT HELP
+• If it does not know, or a detail looks off (a distance, a manager name),
+  double check on carehome.co.uk or the CQC website, and tell your YOPEY
   coordinator.
-- If anything about your safety or wellbeing comes up, contact YOPEY's
-  safeguarding lead (the human fallback) — the assistant will also point you
-  there.
-- To flag a bad answer so it gets fixed, tell your YOPEY coordinator what you
+• If anything about your safety or wellbeing comes up, contact YOPEY's
+  safeguarding lead (the human fallback). If you mention something worrying, the
+  agent will also quietly alert a YOPEY staff member so a real person can help.
+• To flag a bad answer so it gets fixed, tell your YOPEY coordinator what you
   asked and what it replied.
 
 =====================================================================
-GUIDE FOR THE OWNER (the coordinator/person managing the agent)
+GUIDE FOR THE OWNER (the coordinator who manages the agent)
 =====================================================================
 
 WHAT THIS AGENT DOES
 Purpose: it automates YOPEY's outreach so a young person can find a local care
-home and send a first email in minutes instead of via manual phone calls.
-It solves: finding CQC-registered homes nearby, drafting a good intro email,
-chasing follow-ups, and surfacing safeguarding concerns to staff.
+home and send a first email in minutes instead of by manual phone calls.
+It solves: finding CQC registered homes nearby, drafting a good intro email,
+chasing follow ups, polishing visit reports, and surfacing safeguarding concerns
+to staff.
+It also: gates signups to age 16 and over, runs a short Dementia Attitudes
+survey at signup (to measure how volunteering changes attitudes), and can be
+embedded on partner websites as a floating chat bubble.
 It does NOT: provide care or medical advice, guarantee a placement, replace
 human safeguarding judgement, or make decisions on a young person's behalf.
 
 HOW IT WORKS BEHIND THE SCENES
 The knowledge comes from live sources, not a fixed database:
-- CQC public API — the list of care homes, addresses, ratings, and the
-  registered manager (the official regulator's register).
-- postcodes.io + Nominatim — turn postcodes/school names into locations.
-- OpenRouteService — real walking distance and time to each home (when
-  ORS_API_KEY is set; otherwise it falls back to straight-line distance).
-- carehome.co.uk (via grounded web search) — cross-checks the current manager,
+• CQC public API, the list of care homes, addresses, ratings, and the registered
+  manager (the official regulator's register).
+• postcodes.io and Nominatim, turn postcodes and school names into locations.
+• OpenRouteService, real walking distance and time to each home (when
+  ORS_API_KEY is set, otherwise it falls back to straight line distance).
+• carehome.co.uk (via grounded web search), cross checks the current manager,
   which the CQC register can lag on.
-- Google Gemini — the chat "brain" and the web-search lookups.
-- The behaviour rules live in backend/system_prompt.txt.
+• Google Gemini, the chat brain and the web search lookups.
+• The behaviour rules live in backend/system_prompt.txt.
 How to update the knowledge:
-- Change how it talks/behaves → edit backend/system_prompt.txt.
-- Training resources → the training_resources table in Supabase.
-- Verified care-home emails → seed the care_home_emails table.
-- API keys and settings → the backend environment variables in Render.
-How often to review: check the dashboard and safeguarding alerts weekly; review
-the system prompt and training links roughly monthly (CQC data refreshes ~monthly).
+• Change how it talks or behaves: edit backend/system_prompt.txt.
+• Training resources: the training_resources table in Supabase.
+• Verified care home emails: seed the care_home_emails table.
+• API keys and settings: the backend environment variables in Render.
+How often to review: check the dashboard and safeguarding alerts weekly, and
+review the system prompt and training links roughly monthly (CQC data refreshes
+about once a month).
 
 HOW TO MONITOR IT
-- The coordinator dashboard at /dashboard (password-protected) shows signups,
-  who's waiting for a reply, who's stuck, matches, survey scores, and a
+• The coordinator dashboard at /dashboard (password protected) shows signups,
+  who is waiting for a reply, who is stuck, matches, survey scores, and a
   Safeguarding panel. You can open each young person's full conversation log.
-- Signs it's failing: empty care-home results, distances that look wrong,
+• Signs it is failing: empty care home results, distances that look wrong,
   missing nearby homes, unactioned safeguarding alerts, or 503 errors (usually a
-  missing/expired API key — check Render).
-- Good performance looks like: nearby homes returned within the search radius
+  missing or expired API key, so check Render).
+• Good performance looks like: nearby homes returned within the search radius
   with sensible walking distances, emails drafted, replies logged, and
   safeguarding alerts raised and resolved promptly.
 
 HOW TO IMPROVE IT
-- Add a new topic or change tone: edit backend/system_prompt.txt.
-- Fix a wrong answer: correct it at the source (system prompt for behaviour;
-  the relevant Supabase table for data; the API key for a broken lookup).
-- If something breaks (503s, no results, errors): check the API keys in Render
-  and the backend logs, then contact the developer/maintainer.
+• Add a new topic or change tone: edit backend/system_prompt.txt.
+• Fix a wrong answer: correct it at the source (the system prompt for behaviour,
+  the relevant Supabase table for data, the API key for a broken lookup).
+• If something breaks (503s, no results, errors): check the API keys in Render
+  and the backend logs, then contact the developer or maintainer.
 
 GOVERNANCE
-- Data it CAN access: the young person's onboarding details (name, age, email,
-  postcode/school), their chat, survey answers, and their care-home activity.
-- Data it CANNOT access: anything outside this app; it does not browse the
-  young person's device or accounts. The /guide helper specifically has NO
-  access to any user data — it only knows this help text.
-- Privacy: the service follows UK GDPR and the ICO Children's Code (users may be
-  minors). See DPIA.md. Location is kept coarse (postcode/school area, never the
-  young person's full home address). Processors include Supabase, Google Gemini,
-  CQC, postcodes.io, Nominatim, OpenRouteService, and Resend.
-- Escalation path: when the agent can't help or a concern arises, it points the
+• Data it CAN access: the young person's onboarding details (name, age, email,
+  postcode or school), their chat, survey answers, visit reports, and their care
+  home activity.
+• Data it CANNOT access: anything outside this app. It does not browse the young
+  person's device or accounts. The /guide helper specifically has NO access to
+  any user data, it only knows this help text.
+• Data retention: a young person's personal data is kept while their account is
+  active and is automatically deleted after 12 months (one year) of inactivity.
+  They can also delete their own data at any time at /privacy. Safeguarding
+  records follow a separate, agreed retention period.
+• Privacy: the service follows UK GDPR and the ICO Children's Code (users may be
+  minors). See DPIA.md. Location is kept coarse (postcode or school area, never
+  the young person's full home address). Processors include Supabase, Google
+  Gemini, CQC, postcodes.io, Nominatim, OpenRouteService, and Resend.
+• Safeguarding detection: the agent automatically watches for possible concerns
+  in a young person's chat (for example distress, abuse, or a worry about a care
+  home) and raises an alert for staff to review.
+• Escalation path: when the agent cannot help or a concern arises, it points the
   young person to YOPEY's named safeguarding lead, and staff act via the
   Safeguarding panel on the dashboard. See SAFEGUARDING.md.
 """

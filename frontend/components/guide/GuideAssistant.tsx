@@ -4,13 +4,13 @@ import { useRef, useState } from "react";
 import MessageBubble from "@/components/MessageBubble";
 import { askGuide, type GuideMessage } from "@/lib/api";
 
-// Suggested prompts — one tap fills common needs (summarise / access / fix).
+// Suggested prompts. A single tap fills common needs (summarise, access, fix).
 const SUGGESTIONS = [
   "Summarise this guide in a few lines",
   "How do I access the agent?",
   "Where do the care homes come from?",
   "How do I fix a wrong answer?",
-  "What can't the agent help with?",
+  "What can the agent not help with?",
 ];
 
 export default function GuideAssistant() {
@@ -18,7 +18,7 @@ export default function GuideAssistant() {
     {
       role: "assistant",
       content:
-        "Hi! I'm the guide helper. Ask me anything about how this agent works — " +
+        "Hi! I'm the guide helper. Ask me anything about how this agent works. " +
         "I can **summarise** sections, explain how to use it, or point you to the " +
         "right part. Try a suggestion below.",
     },
@@ -49,7 +49,7 @@ export default function GuideAssistant() {
       const answer = await askGuide(q, priorHistory);
       setMessages((m) => [...m, { role: "assistant", content: answer }]);
     } catch (e: any) {
-      setError(e.message || "Something went wrong — please try again.");
+      setError(e.message || "Something went wrong. Please try again.");
     } finally {
       setLoading(false);
       scrollToBottom();
@@ -63,7 +63,7 @@ export default function GuideAssistant() {
         <div>
           <div className="font-semibold text-yopey-primary text-sm">Ask the guide</div>
           <div className="text-[11px] text-yopey-primary/70">
-            Answers only from this page — no personal data.
+            Answers only from this page, no personal data.
           </div>
         </div>
       </div>

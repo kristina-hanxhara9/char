@@ -103,13 +103,51 @@ CREATE TABLE care_home_searches (
     postcode TEXT NOT NULL,              -- normalized: uppercase, no spaces
     radius_miles INTEGER NOT NULL,
     max_results INTEGER NOT NULL,
+    origin_key TEXT DEFAULT 'centroid',  -- distance origin: precise school point ("lat,lng") or "centroid"
     source TEXT,                         -- 'cqc' | 'web_search'
     payload JSONB NOT NULL,
     cached_at TIMESTAMPTZ DEFAULT NOW()
 );
+-- Existing deployments: add the column in place (safe to re-run).
+ALTER TABLE care_home_searches ADD COLUMN IF NOT EXISTS origin_key TEXT DEFAULT 'centroid';
 
 CREATE INDEX idx_care_home_searches_lookup
-    ON care_home_searches (postcode, radius_miles, max_results, cached_at DESC);
+    ON care_home_searches (postcode, origin_key, radius_miles, max_results, cached_at DESC);
+
+-- 7a. CARE HOME MANAGERS — cache of manager names cross-checked against
+-- carehome.co.uk (the more current source than the CQC register). Mirrors
+-- care_home_emails so repeat lookups are free.
+CREATE TABLE care_home_managers (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    care_home_name TEXT NOT NULL,
+    postcode TEXT,
+    manager TEXT NOT NULL,
+    source TEXT,                       -- 'carehome_co_uk' | 'tony_seed' | 'user_confirmed'
+    verified BOOLEAN DEFAULT FALSE,    -- manually confirmed
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    last_used_at TIMESTAMPTZ
+);
+
+CREATE INDEX idx_care_home_managers_name ON care_home_managers (LOWER(care_home_name));
+CREATE INDEX idx_care_home_managers_postcode ON care_home_managers (postcode);
+
+-- 7b. SCHOOL POSTCODES — cache of resolved school → postcode (+ precise
+-- coordinates when resolved via Nominatim, so walking distances measure from
+-- the actual school building, not the postcode centroid). Created out-of-band
+-- historically; this documents it and adds the coordinate columns.
+CREATE TABLE IF NOT EXISTS school_postcodes (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    name_key TEXT UNIQUE NOT NULL,     -- lowercased, whitespace-collapsed school name
+    postcode TEXT NOT NULL,
+    latitude DOUBLE PRECISION,         -- precise school point (NULL for centroid-only sources)
+    longitude DOUBLE PRECISION,
+    source TEXT,                       -- 'nominatim' | 'web_search'
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+-- Existing deployments: add the coordinate columns in place (safe to re-run).
+ALTER TABLE school_postcodes ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION;
+ALTER TABLE school_postcodes ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION;
 
 -- 8. SURVEY RESPONSES — Dementia Attitudes Scale (10 questions, Likert 1-7).
 -- Pre-volunteering survey is taken on the onboard wizard. Post-volunteering

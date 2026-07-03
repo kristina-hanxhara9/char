@@ -849,9 +849,13 @@ def _parse_json_response(text: str) -> Optional[dict]:
 # gaps were handled before.
 def _carehome_directory_url(name: str, postcode: str = "") -> str:
     """Google search restricted to carehome.co.uk for this home's profile.
-    Includes the postcode: same-named homes exist in different towns, and
-    name-only queries surface the wrong one (live-testing feedback)."""
-    query = f'site:carehome.co.uk "{name}" {postcode}'.strip()
+    Uses the OUTWARD code only (e.g. 'UB5'), NOT the full unit postcode: the
+    full code ('UB5 5QG') over-narrows the site: search to zero results (live
+    feedback — 'did not match any documents'), because carehome.co.uk pages
+    rarely carry the exact unit code as indexed text. The outward code still
+    disambiguates same-named homes in different towns without killing the match."""
+    outward = _outward_code(postcode) or ""
+    query = f'site:carehome.co.uk "{name}" {outward}'.strip()
     return "https://www.google.com/search?q=" + requests.utils.quote(query)
 
 
@@ -860,8 +864,10 @@ def _cqc_search_url(name: str, postcode: str = "") -> str:
     young person (or the coordinator) can read the REAL, current rating at
     source. Used for web-sourced homes, whose ratings we must never assert
     ourselves — a hallucinated "Outstanding" on a home we point a child toward
-    is exactly the error this guards against."""
-    query = f'site:cqc.org.uk "{name}" {postcode}'.strip()
+    is exactly the error this guards against. Outward code only, same reason as
+    the carehome.co.uk link above (full unit code returns no results)."""
+    outward = _outward_code(postcode) or ""
+    query = f'site:cqc.org.uk "{name}" {outward}'.strip()
     return "https://www.google.com/search?q=" + requests.utils.quote(query)
 
 
@@ -3769,6 +3775,31 @@ def _build_contacts_context(user_id: str) -> str:
     return "\n\n== CARE HOMES THEY'VE CONTACTED ==\n" + "\n\n".join(parts)
 
 
+def _pii_placeholders(user: dict) -> dict[str, str]:
+    """Map of placeholder token -> the user's real value, for the identity
+    fields we keep PRIVATE from the model. The model only ever sees the tokens
+    (e.g. [FIRST_NAME]); we substitute the real values back in on the way OUT to
+    the young person (and for staff on the dashboard). Only includes fields that
+    are actually set, so we never substitute an empty string."""
+    m: dict[str, str] = {}
+    if user.get("first_name"):
+        m["[FIRST_NAME]"] = str(user["first_name"])
+    if user.get("surname"):
+        m["[SURNAME]"] = str(user["surname"])
+    if user.get("email"):
+        m["[EMAIL]"] = str(user["email"])
+    return m
+
+
+def _fill_placeholders(text: Optional[str], placeholders: dict[str, str]) -> str:
+    """Replace [FIRST_NAME]/[SURNAME]/[EMAIL] tokens with the real values."""
+    if not text:
+        return text or ""
+    for token, real in placeholders.items():
+        text = text.replace(token, real)
+    return text
+
+
 def chat(user_message: str, user_id: str) -> str:
     user = get_user(user_id)
     if not user:
@@ -3784,12 +3815,23 @@ def chat(user_message: str, user_id: str) -> str:
         + f"\n\n== YOPEY SAFEGUARDING CONTACT (a real person — use this when "
         + f"signposting) ==\n{YOPEY_SAFEGUARDING_CONTACT}\n"
         + f"\n== KNOWN USER DETAILS ==\n"
-        # These values are user-supplied (onboarding / save_user_details) and go
-        # into the high-privilege system instruction, so flatten them first.
-        + f"First name: {_inline_safe(user.get('first_name'), 50)}\n"
-        + f"Age: {user.get('age')}\n"
-        + (f"Surname: {_inline_safe(user.get('surname'), 50)}\n" if user.get("surname") else "")
-        + (f"Email: {_inline_safe(user.get('email'), 120)}\n" if user.get("email") else "")
+        # PRIVACY: the young person's identity (first name, surname, email) is
+        # NEVER sent to the model. It only sees PLACEHOLDER tokens; the real
+        # values live in Supabase and are substituted back into the reply before
+        # the young person (or a coordinator) sees it. Age is not sent at all
+        # (the prompt keeps replies age-appropriate generically and forbids age
+        # in emails). Postcode IS sent — the model must pass it to the search
+        # tool, and it is coarse (area, never a full home address).
+        + f"First name: [FIRST_NAME]\n"
+        + (f"Surname: [SURNAME]\n" if user.get("surname") else "")
+        + (f"Email: [EMAIL]\n" if user.get("email") else "")
+        + "(The bracketed tokens above are PLACEHOLDERS. The real name, surname "
+          "and email are kept private from you. Use each token exactly as written "
+          "wherever you would write that detail — for example the email greeting "
+          "and signature. They are automatically replaced with the real values "
+          "before the young person sees your reply. Never guess the real values "
+          "and never ask the young person to repeat details you already have as a "
+          "token.)\n"
         + (f"Search postcode (used for the CURRENT search): {_inline_safe(user.get('postcode'), 12)}\n" if user.get("postcode") else "")
         + (f"Home postcode: {_inline_safe(user.get('home_postcode'), 12)}\n" if user.get("home_postcode") else "")
         + (f"School postcode: {_inline_safe(user.get('school_postcode'), 12)}\n" if user.get("school_postcode") else "")
@@ -3903,9 +3945,12 @@ def chat(user_message: str, user_id: str) -> str:
         if not _has_signposting(assistant_reply):
             assistant_reply = (assistant_reply.rstrip() + "\n\n" + CRISIS_SIGNPOST).strip()
 
+    # Store the reply WITH placeholders (so the model keeps seeing tokens, not
+    # real identity, when this history is replayed next turn), but substitute
+    # the real values into what we return to the young person.
     history.append({"role": "assistant", "content": assistant_reply})
     save_conversation(user_id, history)
-    return assistant_reply
+    return _fill_placeholders(assistant_reply, _pii_placeholders(user))
 
 
 # ============================================================
@@ -4920,6 +4965,16 @@ Example questions you can ask:
 It is good at: local care home search, drafting emails, tidying visit reports,
 encouragement, and signposting training. It is NOT a medical or crisis service.
 
+WHAT IT DOES AND DOES NOT DO
+What it does: find nearby care homes, draft your introduction email, remind you
+to follow up, polish your visit reports, and point you to training.
+What it does NOT do:
+• It drafts your email, but YOU send it. It never sends it for you.
+• It never contacts, emails or phones a care home on your behalf.
+• It does not take any action for you or make decisions for you. You stay in
+  control at every step.
+• It is not a medical or crisis service, and it cannot guarantee you a place.
+
 HOW TO ACCESS IT
 Open the YOPEY Befriender website and press "Find a care home". You need to be
 16 or over. You answer a few quick questions (first name, age, email, and your
@@ -4950,16 +5005,19 @@ GUIDE FOR THE OWNER (the coordinator who manages the agent)
 =====================================================================
 
 WHAT THIS AGENT DOES
-Purpose: it automates YOPEY's outreach so a young person can find a local care
-home and send a first email in minutes instead of by manual phone calls.
+Purpose: it helps a young person find a local care home and DRAFTS a first
+introduction email that the young person then sends themselves, in minutes,
+instead of YOPEY doing this outreach by manual phone calls.
 It solves: finding CQC registered homes nearby, drafting a good intro email,
 chasing follow ups, polishing visit reports, and surfacing safeguarding concerns
 to staff.
 It also: gates signups to age 16 and over, runs a short Dementia Attitudes
 survey at signup (to measure how volunteering changes attitudes), and can be
 embedded on partner websites as a floating chat bubble.
-It does NOT: provide care or medical advice, guarantee a placement, replace
-human safeguarding judgement, or make decisions on a young person's behalf.
+It does NOT: send the introduction email or contact a care home on the young
+person's behalf (the young person stays in control and sends their own email),
+take any action for them, provide care or medical advice, guarantee a placement,
+or replace human safeguarding judgement.
 
 HOW IT WORKS BEHIND THE SCENES
 The knowledge comes from live sources, not a fixed database:
@@ -5038,17 +5096,30 @@ def _guide_assistant_answer(question: str, history: list["GuideMessage"]) -> str
     convo_block = f"Conversation so far:\n{convo}\n" if convo else ""
     safe_question = _inline_safe(question, 1000)
     prompt = (
-        "You are a friendly help assistant for the YOPEY Befriender agent. Answer "
-        "the user's question using ONLY the guide below. You may summarise, list, "
-        "or explain any part of it. If the answer isn't in the guide, say you can "
-        "only help with how this agent works and suggest they contact their YOPEY "
-        "coordinator — never invent features, contacts, or data. Keep answers "
-        "short and plain; use **bold** for key terms and short bullet lists where "
-        "helpful.\n\n"
+        "You are a HELP and DOCUMENTATION assistant that ONLY explains how the "
+        "YOPEY Befriender agent works, using the guide below. You are NOT the "
+        "befriender assistant itself.\n"
+        "Strict rules:\n"
+        "- Answer using ONLY the guide. You may summarise, list, or explain any "
+        "part of it.\n"
+        "- Do NOT perform the agent's tasks. Never offer to draft or write an "
+        "email, search for or suggest care homes, contact a home, or polish a "
+        "visit report. Never ask the user for a postcode, a care home, or any "
+        "personal details.\n"
+        "- If the user asks you to do one of those things (for example 'write an "
+        "email' or 'find care homes near me'), explain that the main YOPEY "
+        "Befriender assistant does that, and tell them how to start it (open the "
+        "site and press 'Find a care home'). Do NOT do the task yourself and do "
+        "NOT invite them to start it with you.\n"
+        "- If the answer isn't in the guide, say you can only help with how this "
+        "agent works and suggest they contact their YOPEY coordinator. Never "
+        "invent features, contacts, or data.\n"
+        "- Keep answers short and plain; use **bold** for key terms and short "
+        "bullet lists where helpful.\n\n"
         f"=== GUIDE ===\n{GUIDE_TEXT}\n=== END GUIDE ===\n\n"
         f"{convo_block}"
         f"User question: {safe_question}\n\n"
-        "Answer:"
+        "Answer (about the guide only):"
     )
     try:
         response = gemini_client.models.generate_content(
@@ -5205,9 +5276,13 @@ def dashboard_conversation(user_id: str):
             detail="Transcripts are viewable only for conversations with a safeguarding flag.",
         )
     raw = load_conversation(user_id)
+    # Assistant turns are stored with identity placeholders (kept private from
+    # the model); fill in the real values so the safeguarding lead reads a
+    # normal transcript.
+    ph = _pii_placeholders(get_user(user_id) or {})
     # Strip tool plumbing — show only the human-readable turns.
     transcript = [
-        {"role": m["role"], "content": m.get("content") or ""}
+        {"role": m["role"], "content": _fill_placeholders(m.get("content") or "", ph)}
         for m in raw
         if m.get("role") in ("user", "assistant") and m.get("content")
     ]

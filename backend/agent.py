@@ -848,15 +848,24 @@ def _parse_json_response(text: str) -> Optional[dict]:
 # required — the setdefault normalisation below fills the rest, matching how
 # gaps were handled before.
 def _carehome_directory_url(name: str, postcode: str = "") -> str:
-    """Google search restricted to carehome.co.uk for this home's profile.
-    Uses the OUTWARD code only (e.g. 'UB5'), NOT the full unit postcode: the
-    full code ('UB5 5QG') over-narrows the site: search to zero results (live
-    feedback — 'did not match any documents'), because carehome.co.uk pages
-    rarely carry the exact unit code as indexed text. The outward code still
-    disambiguates same-named homes in different towns without killing the match."""
-    outward = _outward_code(postcode) or ""
-    query = f'site:carehome.co.uk "{name}" {outward}'.strip()
-    return "https://www.google.com/search?q=" + requests.utils.quote(query)
+    """Link to carehome.co.uk's OWN postcode search results for this home's area.
+
+    A Google `site:carehome.co.uk "Name" postcode` query returned "did not match
+    any documents" for essentially every home (the quoted name + location term
+    over-constrains the site: operator). carehome.co.uk's native search page is
+    reliable instead: /care_search_results.cfm/searchpostcode/<OUTWARD> lists the
+    homes in that outward area, and the young person clicks theirs. We do NOT add
+    /searchchtype/carehomeonly — that would hide nursing homes."""
+    outward = _outward_code(postcode)
+    if outward:
+        return (
+            "https://www.carehome.co.uk/care_search_results.cfm/searchpostcode/"
+            + requests.utils.quote(outward.replace(" ", ""))
+        )
+    # No postcode to search by — fall back to a plain Google search by name.
+    return "https://www.google.com/search?q=" + requests.utils.quote(
+        f'carehome.co.uk "{name}"'.strip()
+    )
 
 
 def _cqc_search_url(name: str, postcode: str = "") -> str:

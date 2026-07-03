@@ -3786,8 +3786,11 @@ def chat(user_message: str, user_id: str) -> str:
         + f"\n== KNOWN USER DETAILS ==\n"
         # These values are user-supplied (onboarding / save_user_details) and go
         # into the high-privilege system instruction, so flatten them first.
+        # Data minimisation: only fields the chat actually needs are sent to the
+        # model. Age is deliberately NOT sent — the prompt already keeps replies
+        # age-appropriate generically and forbids putting age in emails, so the
+        # exact value adds nothing but is extra personal data at the model.
         + f"First name: {_inline_safe(user.get('first_name'), 50)}\n"
-        + f"Age: {user.get('age')}\n"
         + (f"Surname: {_inline_safe(user.get('surname'), 50)}\n" if user.get("surname") else "")
         + (f"Email: {_inline_safe(user.get('email'), 120)}\n" if user.get("email") else "")
         + (f"Search postcode (used for the CURRENT search): {_inline_safe(user.get('postcode'), 12)}\n" if user.get("postcode") else "")
@@ -5051,17 +5054,30 @@ def _guide_assistant_answer(question: str, history: list["GuideMessage"]) -> str
     convo_block = f"Conversation so far:\n{convo}\n" if convo else ""
     safe_question = _inline_safe(question, 1000)
     prompt = (
-        "You are a friendly help assistant for the YOPEY Befriender agent. Answer "
-        "the user's question using ONLY the guide below. You may summarise, list, "
-        "or explain any part of it. If the answer isn't in the guide, say you can "
-        "only help with how this agent works and suggest they contact their YOPEY "
-        "coordinator — never invent features, contacts, or data. Keep answers "
-        "short and plain; use **bold** for key terms and short bullet lists where "
-        "helpful.\n\n"
+        "You are a HELP and DOCUMENTATION assistant that ONLY explains how the "
+        "YOPEY Befriender agent works, using the guide below. You are NOT the "
+        "befriender assistant itself.\n"
+        "Strict rules:\n"
+        "- Answer using ONLY the guide. You may summarise, list, or explain any "
+        "part of it.\n"
+        "- Do NOT perform the agent's tasks. Never offer to draft or write an "
+        "email, search for or suggest care homes, contact a home, or polish a "
+        "visit report. Never ask the user for a postcode, a care home, or any "
+        "personal details.\n"
+        "- If the user asks you to do one of those things (for example 'write an "
+        "email' or 'find care homes near me'), explain that the main YOPEY "
+        "Befriender assistant does that, and tell them how to start it (open the "
+        "site and press 'Find a care home'). Do NOT do the task yourself and do "
+        "NOT invite them to start it with you.\n"
+        "- If the answer isn't in the guide, say you can only help with how this "
+        "agent works and suggest they contact their YOPEY coordinator. Never "
+        "invent features, contacts, or data.\n"
+        "- Keep answers short and plain; use **bold** for key terms and short "
+        "bullet lists where helpful.\n\n"
         f"=== GUIDE ===\n{GUIDE_TEXT}\n=== END GUIDE ===\n\n"
         f"{convo_block}"
         f"User question: {safe_question}\n\n"
-        "Answer:"
+        "Answer (about the guide only):"
     )
     try:
         response = gemini_client.models.generate_content(

@@ -849,9 +849,13 @@ def _parse_json_response(text: str) -> Optional[dict]:
 # gaps were handled before.
 def _carehome_directory_url(name: str, postcode: str = "") -> str:
     """Google search restricted to carehome.co.uk for this home's profile.
-    Includes the postcode: same-named homes exist in different towns, and
-    name-only queries surface the wrong one (live-testing feedback)."""
-    query = f'site:carehome.co.uk "{name}" {postcode}'.strip()
+    Uses the OUTWARD code only (e.g. 'UB5'), NOT the full unit postcode: the
+    full code ('UB5 5QG') over-narrows the site: search to zero results (live
+    feedback — 'did not match any documents'), because carehome.co.uk pages
+    rarely carry the exact unit code as indexed text. The outward code still
+    disambiguates same-named homes in different towns without killing the match."""
+    outward = _outward_code(postcode) or ""
+    query = f'site:carehome.co.uk "{name}" {outward}'.strip()
     return "https://www.google.com/search?q=" + requests.utils.quote(query)
 
 
@@ -860,8 +864,10 @@ def _cqc_search_url(name: str, postcode: str = "") -> str:
     young person (or the coordinator) can read the REAL, current rating at
     source. Used for web-sourced homes, whose ratings we must never assert
     ourselves — a hallucinated "Outstanding" on a home we point a child toward
-    is exactly the error this guards against."""
-    query = f'site:cqc.org.uk "{name}" {postcode}'.strip()
+    is exactly the error this guards against. Outward code only, same reason as
+    the carehome.co.uk link above (full unit code returns no results)."""
+    outward = _outward_code(postcode) or ""
+    query = f'site:cqc.org.uk "{name}" {outward}'.strip()
     return "https://www.google.com/search?q=" + requests.utils.quote(query)
 
 
@@ -3769,6 +3775,31 @@ def _build_contacts_context(user_id: str) -> str:
     return "\n\n== CARE HOMES THEY'VE CONTACTED ==\n" + "\n\n".join(parts)
 
 
+def _pii_placeholders(user: dict) -> dict[str, str]:
+    """Map of placeholder token -> the user's real value, for the identity
+    fields we keep PRIVATE from the model. The model only ever sees the tokens
+    (e.g. [FIRST_NAME]); we substitute the real values back in on the way OUT to
+    the young person (and for staff on the dashboard). Only includes fields that
+    are actually set, so we never substitute an empty string."""
+    m: dict[str, str] = {}
+    if user.get("first_name"):
+        m["[FIRST_NAME]"] = str(user["first_name"])
+    if user.get("surname"):
+        m["[SURNAME]"] = str(user["surname"])
+    if user.get("email"):
+        m["[EMAIL]"] = str(user["email"])
+    return m
+
+
+def _fill_placeholders(text: Optional[str], placeholders: dict[str, str]) -> str:
+    """Replace [FIRST_NAME]/[SURNAME]/[EMAIL] tokens with the real values."""
+    if not text:
+        return text or ""
+    for token, real in placeholders.items():
+        text = text.replace(token, real)
+    return text
+
+
 def chat(user_message: str, user_id: str) -> str:
     user = get_user(user_id)
     if not user:
@@ -3784,15 +3815,23 @@ def chat(user_message: str, user_id: str) -> str:
         + f"\n\n== YOPEY SAFEGUARDING CONTACT (a real person — use this when "
         + f"signposting) ==\n{YOPEY_SAFEGUARDING_CONTACT}\n"
         + f"\n== KNOWN USER DETAILS ==\n"
-        # These values are user-supplied (onboarding / save_user_details) and go
-        # into the high-privilege system instruction, so flatten them first.
-        # Data minimisation: only fields the chat actually needs are sent to the
-        # model. Age is deliberately NOT sent — the prompt already keeps replies
-        # age-appropriate generically and forbids putting age in emails, so the
-        # exact value adds nothing but is extra personal data at the model.
-        + f"First name: {_inline_safe(user.get('first_name'), 50)}\n"
-        + (f"Surname: {_inline_safe(user.get('surname'), 50)}\n" if user.get("surname") else "")
-        + (f"Email: {_inline_safe(user.get('email'), 120)}\n" if user.get("email") else "")
+        # PRIVACY: the young person's identity (first name, surname, email) is
+        # NEVER sent to the model. It only sees PLACEHOLDER tokens; the real
+        # values live in Supabase and are substituted back into the reply before
+        # the young person (or a coordinator) sees it. Age is not sent at all
+        # (the prompt keeps replies age-appropriate generically and forbids age
+        # in emails). Postcode IS sent — the model must pass it to the search
+        # tool, and it is coarse (area, never a full home address).
+        + f"First name: [FIRST_NAME]\n"
+        + (f"Surname: [SURNAME]\n" if user.get("surname") else "")
+        + (f"Email: [EMAIL]\n" if user.get("email") else "")
+        + "(The bracketed tokens above are PLACEHOLDERS. The real name, surname "
+          "and email are kept private from you. Use each token exactly as written "
+          "wherever you would write that detail — for example the email greeting "
+          "and signature. They are automatically replaced with the real values "
+          "before the young person sees your reply. Never guess the real values "
+          "and never ask the young person to repeat details you already have as a "
+          "token.)\n"
         + (f"Search postcode (used for the CURRENT search): {_inline_safe(user.get('postcode'), 12)}\n" if user.get("postcode") else "")
         + (f"Home postcode: {_inline_safe(user.get('home_postcode'), 12)}\n" if user.get("home_postcode") else "")
         + (f"School postcode: {_inline_safe(user.get('school_postcode'), 12)}\n" if user.get("school_postcode") else "")
@@ -3906,9 +3945,12 @@ def chat(user_message: str, user_id: str) -> str:
         if not _has_signposting(assistant_reply):
             assistant_reply = (assistant_reply.rstrip() + "\n\n" + CRISIS_SIGNPOST).strip()
 
+    # Store the reply WITH placeholders (so the model keeps seeing tokens, not
+    # real identity, when this history is replayed next turn), but substitute
+    # the real values into what we return to the young person.
     history.append({"role": "assistant", "content": assistant_reply})
     save_conversation(user_id, history)
-    return assistant_reply
+    return _fill_placeholders(assistant_reply, _pii_placeholders(user))
 
 
 # ============================================================
@@ -5234,9 +5276,13 @@ def dashboard_conversation(user_id: str):
             detail="Transcripts are viewable only for conversations with a safeguarding flag.",
         )
     raw = load_conversation(user_id)
+    # Assistant turns are stored with identity placeholders (kept private from
+    # the model); fill in the real values so the safeguarding lead reads a
+    # normal transcript.
+    ph = _pii_placeholders(get_user(user_id) or {})
     # Strip tool plumbing — show only the human-readable turns.
     transcript = [
-        {"role": m["role"], "content": m.get("content") or ""}
+        {"role": m["role"], "content": _fill_placeholders(m.get("content") or "", ph)}
         for m in raw
         if m.get("role") in ("user", "assistant") and m.get("content")
     ]

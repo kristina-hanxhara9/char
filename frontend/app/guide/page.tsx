@@ -38,6 +38,15 @@ const USER_GUIDE: Section[] = [
           "Pointing you to free dementia awareness training.",
         ],
       },
+      {
+        heading: "What it does NOT do (you stay in control)",
+        items: [
+          "It drafts your email, but YOU send it. It never sends it for you.",
+          "It never contacts, emails or phones a care home on your behalf.",
+          "It does not take any action for you or make decisions for you.",
+          "It is not a medical or crisis service, and it cannot guarantee you a place.",
+        ],
+      },
     ],
   },
   {
@@ -94,7 +103,7 @@ const OWNER_GUIDE: Section[] = [
     blocks: [
       {
         items: [
-          "In one sentence: it lets a young person find a local care home and send a first email in minutes, instead of YOPEY doing it by manual phone calls.",
+          "In one sentence: it helps a young person find a local care home and drafts a first introduction email that they then send themselves, in minutes, instead of YOPEY doing this outreach by manual phone calls.",
           "It solves: finding CQC registered homes nearby, drafting a good intro email, chasing follow ups, polishing visit reports, and surfacing safeguarding concerns to staff.",
           "It also gates signups to age 16 and over, runs a short Dementia Attitudes survey at signup (to measure how volunteering changes attitudes), and can be embedded on partner websites as a floating chat bubble.",
         ],
@@ -102,9 +111,11 @@ const OWNER_GUIDE: Section[] = [
       {
         heading: "What it does NOT do",
         items: [
+          "Send the introduction email or contact a care home on the young person's behalf. It drafts the email; the young person sends it themselves and stays in control.",
+          "Take any action for a young person or make decisions for them.",
           "Provide care or medical advice.",
           "Guarantee a placement or match.",
-          "Replace human safeguarding judgement, or make decisions for a young person.",
+          "Replace human safeguarding judgement.",
         ],
       },
     ],

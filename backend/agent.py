@@ -4921,11 +4921,12 @@ It is good at: local care home search, drafting emails, tidying visit reports,
 encouragement, and signposting training. It is NOT a medical or crisis service.
 
 HOW TO ACCESS IT
-Open the YOPEY Befriender website and press "Find a care home". You answer a few
-quick questions (first name, age, email, and your postcode or school), then you
-start typing to the assistant. If you leave and come back, you can pick up again
-through a link YOPEY emails you. It can also appear as a chat bubble on partner
-websites that have added it.
+Open the YOPEY Befriender website and press "Find a care home". You need to be
+16 or over. You answer a few quick questions (first name, age, email, and your
+postcode or school), and a short survey about attitudes to dementia that takes a
+couple of minutes, then you start typing to the assistant. If you leave and come
+back, you can pick up again through a link YOPEY emails you. It can also appear
+as a chat bubble on partner websites that have added it.
 
 HOW TO GET THE BEST OUT OF IT
 • Give it your postcode or school name so it searches the right area.
@@ -4939,7 +4940,8 @@ WHEN THE AGENT CANNOT HELP
   double check on carehome.co.uk or the CQC website, and tell your YOPEY
   coordinator.
 • If anything about your safety or wellbeing comes up, contact YOPEY's
-  safeguarding lead (the human fallback). The assistant will also point you there.
+  safeguarding lead (the human fallback). If you mention something worrying, the
+  agent will also quietly alert a YOPEY staff member so a real person can help.
 • To flag a bad answer so it gets fixed, tell your YOPEY coordinator what you
   asked and what it replied.
 
@@ -4953,6 +4955,9 @@ home and send a first email in minutes instead of by manual phone calls.
 It solves: finding CQC registered homes nearby, drafting a good intro email,
 chasing follow ups, polishing visit reports, and surfacing safeguarding concerns
 to staff.
+It also: gates signups to age 16 and over, runs a short Dementia Attitudes
+survey at signup (to measure how volunteering changes attitudes), and can be
+embedded on partner websites as a floating chat bubble.
 It does NOT: provide care or medical advice, guarantee a placement, replace
 human safeguarding judgement, or make decisions on a young person's behalf.
 
@@ -5009,6 +5014,9 @@ GOVERNANCE
   minors). See DPIA.md. Location is kept coarse (postcode or school area, never
   the young person's full home address). Processors include Supabase, Google
   Gemini, CQC, postcodes.io, Nominatim, OpenRouteService, and Resend.
+• Safeguarding detection: the agent automatically watches for possible concerns
+  in a young person's chat (for example distress, abuse, or a worry about a care
+  home) and raises an alert for staff to review.
 • Escalation path: when the agent cannot help or a concern arises, it points the
   young person to YOPEY's named safeguarding lead, and staff act via the
   Safeguarding panel on the dashboard. See SAFEGUARDING.md.

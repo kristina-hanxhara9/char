@@ -46,8 +46,10 @@ const USER_GUIDE: Section[] = [
     blocks: [
       {
         items: [
+          "You need to be 16 or over to use it.",
           "Open the YOPEY Befriender website and press “Find a care home”.",
           "Answer a few quick questions (first name, age, email, and your postcode or school).",
+          "At signup you also answer a short survey about attitudes to dementia, which takes a couple of minutes.",
           "Then just start typing to the assistant to begin a conversation.",
           "If you leave and come back, you can pick up again through a link YOPEY emails you.",
           "It may also appear as a chat bubble on partner websites that have added it.",
@@ -76,7 +78,7 @@ const USER_GUIDE: Section[] = [
       {
         items: [
           "If it does not know, or a detail looks off (a distance, a manager name), double check on carehome.co.uk or the CQC website.",
-          "If anything about your safety or wellbeing comes up, contact YOPEY's safeguarding lead, the human fallback. The assistant will also point you there.",
+          "If anything about your safety or wellbeing comes up, contact YOPEY's safeguarding lead, the human fallback. If you mention something worrying, the agent will also quietly alert a YOPEY staff member so a real person can help.",
           "To flag a bad answer so it gets fixed, tell your YOPEY coordinator what you asked and what it replied.",
         ],
       },
@@ -94,6 +96,7 @@ const OWNER_GUIDE: Section[] = [
         items: [
           "In one sentence: it lets a young person find a local care home and send a first email in minutes, instead of YOPEY doing it by manual phone calls.",
           "It solves: finding CQC registered homes nearby, drafting a good intro email, chasing follow ups, polishing visit reports, and surfacing safeguarding concerns to staff.",
+          "It also gates signups to age 16 and over, runs a short Dementia Attitudes survey at signup (to measure how volunteering changes attitudes), and can be embedded on partner websites as a floating chat bubble.",
         ],
       },
       {
@@ -208,9 +211,10 @@ const OWNER_GUIDE: Section[] = [
         ],
       },
       {
-        heading: "Escalation path when the agent cannot help",
+        heading: "Safeguarding and escalation",
         items: [
-          "The agent points the young person to YOPEY's named safeguarding lead.",
+          "The agent automatically watches for possible concerns in chat (for example distress, abuse, or a worry about a care home) and raises an alert for staff.",
+          "It points the young person to YOPEY's named safeguarding lead.",
           "Staff act on concerns via the Safeguarding panel on the dashboard. See SAFEGUARDING.md.",
         ],
       },

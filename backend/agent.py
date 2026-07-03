@@ -4000,6 +4000,21 @@ class ChatResponse(BaseModel):
     reply: str
 
 
+class GuideMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=4000)
+
+
+class GuideAssistantRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=1000)
+    # Prior turns for follow-ups ("summarise that", "what about the owner bit?").
+    history: list[GuideMessage] = Field(default_factory=list)
+
+
+class GuideAssistantResponse(BaseModel):
+    answer: str
+
+
 class MarkReplyRequest(BaseModel):
     contact_id: str
     outcome: str  # 'accepted' or 'rejected'
@@ -4864,6 +4879,180 @@ def chat_endpoint(req: ChatRequest, request: Request):
     _require_services()
     reply = chat(req.message, req.user_id)
     return ChatResponse(reply=reply)
+
+
+# ============================================================
+# GUIDE ASSISTANT — a small helper that answers questions about
+# how the agent works, for the /guide page. It ONLY knows the text
+# below (no user data, no dashboard access, no tools). Keep GUIDE_TEXT
+# in sync with frontend/app/guide/page.tsx (the human-readable version).
+# ============================================================
+
+GUIDE_TEXT = """
+YOPEY BEFRIENDER — HOW THE AGENT WORKS (help guide)
+
+WHAT THE AGENT IS
+An AI chatbot that helps young people (aged 16-21) volunteer as dementia
+befrienders. It finds nearby CQC-registered care homes, drafts an introduction
+email the young person sends themselves, sends gentle reminder emails, and
+shares dementia-awareness training. A password-protected coordinator dashboard
+(at /dashboard) lets YOPEY staff track progress and review safeguarding alerts.
+
+=====================================================================
+GUIDE FOR THE USER (the young volunteer using the chat)
+=====================================================================
+
+WHAT IT CAN HELP YOU WITH
+- Find care homes near your school/college or home (with walking distance and
+  time to each, when available).
+- Write a friendly introduction email to a care home manager, in your own name.
+- Remind you to follow up if you haven't heard back (after 3, 5, 7, 10 days).
+- Point you to free dementia-awareness training (e.g. Dementia Friends).
+- Encourage you and answer questions about befriending.
+Example questions you can ask:
+  1. "Find care homes near IP33 3YU."
+  2. "Can you help me write an email to the manager?"
+  3. "I'm nervous about my first visit — any tips?"
+  4. "What dementia training can I do?"
+  5. "The manager said yes — what do I do next?"
+It is good at: local care-home search, drafting emails, encouragement, and
+signposting training. It is NOT a medical or crisis service.
+
+HOW TO ACCESS IT
+Open the YOPEY Befriender website and press "Find a care home". You'll answer a
+few quick questions (first name, age, email, and your postcode or school), then
+you can start typing to the assistant. You can also reach it as a chat bubble on
+partner websites that have embedded it.
+
+HOW TO GET THE BEST OUT OF IT
+- Give it your postcode or school name so it can search the right area.
+- Be specific ("email in a warm, casual tone", "homes within 1 mile").
+- If an answer isn't quite right, just say so and ask it to try again or change
+  it ("make the email shorter", "search a bit wider").
+- You can always ask it to redo or explain anything.
+
+WHEN THE AGENT CAN'T HELP
+- If it doesn't know, or something feels wrong (a distance, a manager name),
+  double-check on carehome.co.uk or the CQC website, and tell your YOPEY
+  coordinator.
+- If anything about your safety or wellbeing comes up, contact YOPEY's
+  safeguarding lead (the human fallback) — the assistant will also point you
+  there.
+- To flag a bad answer so it gets fixed, tell your YOPEY coordinator what you
+  asked and what it replied.
+
+=====================================================================
+GUIDE FOR THE OWNER (the coordinator/person managing the agent)
+=====================================================================
+
+WHAT THIS AGENT DOES
+Purpose: it automates YOPEY's outreach so a young person can find a local care
+home and send a first email in minutes instead of via manual phone calls.
+It solves: finding CQC-registered homes nearby, drafting a good intro email,
+chasing follow-ups, and surfacing safeguarding concerns to staff.
+It does NOT: provide care or medical advice, guarantee a placement, replace
+human safeguarding judgement, or make decisions on a young person's behalf.
+
+HOW IT WORKS BEHIND THE SCENES
+The knowledge comes from live sources, not a fixed database:
+- CQC public API — the list of care homes, addresses, ratings, and the
+  registered manager (the official regulator's register).
+- postcodes.io + Nominatim — turn postcodes/school names into locations.
+- OpenRouteService — real walking distance and time to each home (when
+  ORS_API_KEY is set; otherwise it falls back to straight-line distance).
+- carehome.co.uk (via grounded web search) — cross-checks the current manager,
+  which the CQC register can lag on.
+- Google Gemini — the chat "brain" and the web-search lookups.
+- The behaviour rules live in backend/system_prompt.txt.
+How to update the knowledge:
+- Change how it talks/behaves → edit backend/system_prompt.txt.
+- Training resources → the training_resources table in Supabase.
+- Verified care-home emails → seed the care_home_emails table.
+- API keys and settings → the backend environment variables in Render.
+How often to review: check the dashboard and safeguarding alerts weekly; review
+the system prompt and training links roughly monthly (CQC data refreshes ~monthly).
+
+HOW TO MONITOR IT
+- The coordinator dashboard at /dashboard (password-protected) shows signups,
+  who's waiting for a reply, who's stuck, matches, survey scores, and a
+  Safeguarding panel. You can open each young person's full conversation log.
+- Signs it's failing: empty care-home results, distances that look wrong,
+  missing nearby homes, unactioned safeguarding alerts, or 503 errors (usually a
+  missing/expired API key — check Render).
+- Good performance looks like: nearby homes returned within the search radius
+  with sensible walking distances, emails drafted, replies logged, and
+  safeguarding alerts raised and resolved promptly.
+
+HOW TO IMPROVE IT
+- Add a new topic or change tone: edit backend/system_prompt.txt.
+- Fix a wrong answer: correct it at the source (system prompt for behaviour;
+  the relevant Supabase table for data; the API key for a broken lookup).
+- If something breaks (503s, no results, errors): check the API keys in Render
+  and the backend logs, then contact the developer/maintainer.
+
+GOVERNANCE
+- Data it CAN access: the young person's onboarding details (name, age, email,
+  postcode/school), their chat, survey answers, and their care-home activity.
+- Data it CANNOT access: anything outside this app; it does not browse the
+  young person's device or accounts. The /guide helper specifically has NO
+  access to any user data — it only knows this help text.
+- Privacy: the service follows UK GDPR and the ICO Children's Code (users may be
+  minors). See DPIA.md. Location is kept coarse (postcode/school area, never the
+  young person's full home address). Processors include Supabase, Google Gemini,
+  CQC, postcodes.io, Nominatim, OpenRouteService, and Resend.
+- Escalation path: when the agent can't help or a concern arises, it points the
+  young person to YOPEY's named safeguarding lead, and staff act via the
+  Safeguarding panel on the dashboard. See SAFEGUARDING.md.
+"""
+
+
+def _guide_assistant_answer(question: str, history: list["GuideMessage"]) -> str:
+    """Answer a question strictly from GUIDE_TEXT. No tools, no user data."""
+    if not gemini_client:
+        return (
+            "The guide assistant is unavailable right now. You can still read the "
+            "full guide on this page, or contact your YOPEY coordinator."
+        )
+    # Flatten any prior turns (defence-in-depth: they're user-supplied).
+    convo = ""
+    for m in history[-6:]:
+        who = "User" if m.role == "user" else "Assistant"
+        convo += f"{who}: {_inline_safe(m.content, 500)}\n"
+    convo_block = f"Conversation so far:\n{convo}\n" if convo else ""
+    safe_question = _inline_safe(question, 1000)
+    prompt = (
+        "You are a friendly help assistant for the YOPEY Befriender agent. Answer "
+        "the user's question using ONLY the guide below. You may summarise, list, "
+        "or explain any part of it. If the answer isn't in the guide, say you can "
+        "only help with how this agent works and suggest they contact their YOPEY "
+        "coordinator — never invent features, contacts, or data. Keep answers "
+        "short and plain; use **bold** for key terms and short bullet lists where "
+        "helpful.\n\n"
+        f"=== GUIDE ===\n{GUIDE_TEXT}\n=== END GUIDE ===\n\n"
+        f"{convo_block}"
+        f"User question: {safe_question}\n\n"
+        "Answer:"
+    )
+    try:
+        response = gemini_client.models.generate_content(
+            model=SEARCH_MODEL, contents=prompt
+        )
+        return (response.text or "").strip() or (
+            "I'm not sure — try rephrasing, or read the relevant section above."
+        )
+    except Exception as e:
+        print(f"[guide-assistant] error: {e}")
+        return (
+            "Sorry, I couldn't answer just now. Please try again, or read the "
+            "guide above."
+        )
+
+
+@app.post("/api/guide-assistant", response_model=GuideAssistantResponse)
+@limiter.limit("20/minute")
+def guide_assistant_endpoint(req: GuideAssistantRequest, request: Request):
+    """Q&A over the help guide only — no user data, no auth needed."""
+    return GuideAssistantResponse(answer=_guide_assistant_answer(req.question, req.history))
 
 
 # ---- Dashboard endpoints (password-protected) ----

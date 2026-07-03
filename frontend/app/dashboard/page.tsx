@@ -302,6 +302,12 @@ export default function DashboardPage() {
             <span className="text-base text-yopey-primary/80 italic">Befriender · Dashboard</span>
           </Link>
           <div className="flex items-center gap-2">
+            <Link
+              href="/guide"
+              className="text-sm text-yopey-primary hover:bg-white/30 font-semibold px-3 py-2 rounded-lg min-h-[40px] flex items-center"
+            >
+              Guide
+            </Link>
             <button
               onClick={reloadCurrentTab}
               className="text-sm text-yopey-primary hover:bg-white/30 font-semibold px-3 py-2 rounded-lg min-h-[40px]"

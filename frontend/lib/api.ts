@@ -234,6 +234,26 @@ export async function sendMessage(
   return data.reply as string;
 }
 
+export type GuideMessage = { role: "user" | "assistant"; content: string };
+
+export async function askGuide(
+  question: string,
+  history: GuideMessage[] = []
+): Promise<string> {
+  // Q&A over the help guide only — no auth, no user data.
+  const res = await fetch(`${API_URL}/api/guide-assistant`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question, history }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `Guide assistant failed (${res.status})`);
+  }
+  const data = await res.json();
+  return data.answer as string;
+}
+
 export async function fetchDashboard<T = unknown>(
   path: string,
   password: string

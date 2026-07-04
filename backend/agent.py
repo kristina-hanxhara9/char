@@ -4974,15 +4974,18 @@ Example questions you can ask:
 It is good at: local care home search, drafting emails, tidying visit reports,
 encouragement, and signposting training. It is NOT a medical or crisis service.
 
-WHAT IT DOES AND DOES NOT DO
-What it does: find nearby care homes, draft your introduction email, remind you
-to follow up, polish your visit reports, and point you to training.
-What it does NOT do:
-• It drafts your email, but YOU send it. It never sends it for you.
-• It never contacts, emails or phones a care home on your behalf.
-• It does not take any action for you or make decisions for you. You stay in
-  control at every step.
-• It is not a medical or crisis service, and it cannot guarantee you a place.
+WHAT IT DOES
+• Finds nearby care homes, with walking distance and time to each.
+• Drafts an introduction email in the young person's own name.
+• Reminds about following up if there is no reply.
+• Polishes a visit report afterwards, so it reads clearly.
+• Points to free dementia awareness training.
+WHAT IT DOES NOT DO
+• It drafts the introduction email, but the young person sends it themselves. It
+  never sends it for them.
+• It never contacts, emails or phones a care home on anyone's behalf.
+• It does not take any action for the young person or make decisions for them.
+• It is not a medical or crisis service, and it cannot guarantee a place.
 
 HOW TO ACCESS IT
 Open the YOPEY Befriender website and press "Find a care home". You need to be
@@ -5017,16 +5020,21 @@ WHAT THIS AGENT DOES
 Purpose: it helps a young person find a local care home and DRAFTS a first
 introduction email that the young person then sends themselves, in minutes,
 instead of YOPEY doing this outreach by manual phone calls.
-It solves: finding CQC registered homes nearby, drafting a good intro email,
-chasing follow ups, polishing visit reports, and surfacing safeguarding concerns
-to staff.
 It also: gates signups to age 16 and over, runs a short Dementia Attitudes
 survey at signup (to measure how volunteering changes attitudes), and can be
 embedded on partner websites as a floating chat bubble.
-It does NOT: send the introduction email or contact a care home on the young
-person's behalf (the young person stays in control and sends their own email),
-take any action for them, provide care or medical advice, guarantee a placement,
-or replace human safeguarding judgement.
+WHAT IT DOES
+• Finds nearby care homes, with walking distance and time to each.
+• Drafts an introduction email in the young person's own name.
+• Reminds about following up if there is no reply.
+• Polishes a visit report afterwards, so it reads clearly.
+• Points to free dementia awareness training.
+WHAT IT DOES NOT DO
+• It drafts the introduction email, but the young person sends it themselves. It
+  never sends it for them.
+• It never contacts, emails or phones a care home on anyone's behalf.
+• It does not take any action for the young person or make decisions for them.
+• It is not a medical or crisis service, and it cannot guarantee a place.
 
 HOW IT WORKS BEHIND THE SCENES
 The knowledge comes from live sources, not a fixed database:

@@ -34,6 +34,7 @@ export default function Step2Survey({ data, setData, onNext, onBack }: Props) {
   const [touched, setTouched] = useState(false);
 
   const allAnswered = QUESTIONS.every((q) => typeof data[q.key] === "number");
+  const answeredCount = QUESTIONS.filter((q) => typeof data[q.key] === "number").length;
 
   function setAnswer(key: keyof SurveyAnswers, value: number) {
     setData((prev) => ({ ...prev, [key]: value }));
@@ -41,7 +42,18 @@ export default function Step2Survey({ data, setData, onNext, onBack }: Props) {
 
   function handleNext() {
     setTouched(true);
-    if (allAnswered) onNext();
+    if (allAnswered) {
+      onNext();
+      return;
+    }
+    // Not all answered — on mobile it's easy to scroll past one. Instead of a
+    // dead disabled button, guide them: jump to the first question they missed.
+    const firstMissing = QUESTIONS.find((q) => typeof data[q.key] !== "number");
+    if (firstMissing) {
+      document
+        .getElementById(`survey-q-${firstMissing.key}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
   }
 
   return (
@@ -67,8 +79,11 @@ export default function Step2Survey({ data, setData, onNext, onBack }: Props) {
         return (
           <div
             key={q.key}
-            className={`rounded-2xl border p-4 transition ${
-              answered ? "border-gray-200 bg-white" : "border-gray-200 bg-white"
+            id={`survey-q-${q.key}`}
+            className={`rounded-2xl border p-4 transition scroll-mt-24 ${
+              touched && !answered
+                ? "border-amber-400 bg-amber-50"
+                : "border-gray-200 bg-white"
             }`}
           >
             <p className="text-[15px] text-gray-800 leading-snug mb-3">
@@ -107,7 +122,8 @@ export default function Step2Survey({ data, setData, onNext, onBack }: Props) {
 
       {touched && !allAnswered && (
         <div className="rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-sm px-4 py-3">
-          Please answer all 10 questions before continuing.
+          You&apos;ve answered {answeredCount} of 10. Please answer the highlighted
+          question{10 - answeredCount === 1 ? "" : "s"} to continue.
         </div>
       )}
 
@@ -119,13 +135,17 @@ export default function Step2Survey({ data, setData, onNext, onBack }: Props) {
         >
           ← Back
         </button>
+        {/* Deliberately NOT disabled: a disabled button fires no onClick, so a
+            user who missed a question (easy on mobile) would tap a dead button
+            with no feedback. Keep it live and guide them to the missed one. */}
         <button
           type="button"
           onClick={handleNext}
-          disabled={!allAnswered}
-          className="flex-[2] px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-md hover:opacity-90 transition active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed min-h-[52px]"
+          className={`flex-[2] px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-md hover:opacity-90 transition active:scale-[0.98] min-h-[52px] ${
+            allAnswered ? "" : "opacity-60"
+          }`}
         >
-          Continue →
+          {allAnswered ? "Continue →" : `Continue → (${answeredCount}/10)`}
         </button>
       </div>
     </div>

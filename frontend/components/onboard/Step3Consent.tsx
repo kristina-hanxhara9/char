@@ -12,8 +12,14 @@ type Props = {
 export default function Step3Consent({ submitting, error, onSubmit, onBack }: Props) {
   const [consent, setConsent] = useState(false);
   const [ageConfirmed, setAgeConfirmed] = useState(false);
+  const [touched, setTouched] = useState(false);
 
   const canSubmit = consent && ageConfirmed && !submitting;
+
+  function handleSubmit() {
+    setTouched(true);
+    if (consent && ageConfirmed && !submitting) onSubmit(consent);
+  }
 
   return (
     <div className="space-y-5">
@@ -57,6 +63,12 @@ export default function Step3Consent({ submitting, error, onSubmit, onBack }: Pr
         </label>
       </div>
 
+      {touched && (!consent || !ageConfirmed) && (
+        <div className="rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-sm px-4 py-3">
+          Please tick both boxes above to continue.
+        </div>
+      )}
+
       {error && (
         <div className="rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3">
           {error}
@@ -72,14 +84,15 @@ export default function Step3Consent({ submitting, error, onSubmit, onBack }: Pr
         >
           ← Back
         </button>
+        {/* Live except while submitting: a disabled button gives no feedback, so
+            a mobile user who missed a checkbox would be stuck silently. */}
         <button
           type="button"
-          onClick={() => {
-            if (!consent || !ageConfirmed) return;
-            onSubmit(consent);
-          }}
-          disabled={!canSubmit}
-          className="flex-[2] px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-md hover:opacity-90 transition active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed min-h-[52px]"
+          onClick={handleSubmit}
+          disabled={submitting}
+          className={`flex-[2] px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-md hover:opacity-90 transition active:scale-[0.98] disabled:opacity-50 min-h-[52px] ${
+            canSubmit ? "" : "opacity-60"
+          }`}
         >
           {submitting ? "Setting up..." : "Find care homes →"}
         </button>

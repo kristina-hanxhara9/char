@@ -29,22 +29,22 @@ const USER_GUIDE: Section[] = [
         ],
       },
       {
-        heading: "It is good at",
+        heading: "What it does",
         items: [
-          "Finding CQC registered care homes near your school or home, with walking distance and time to each.",
-          "Drafting a friendly introduction email in your own name.",
-          "Nudging you to follow up if you have not heard back.",
-          "Polishing a visit report after you have volunteered, so it reads clearly.",
-          "Pointing you to free dementia awareness training.",
+          "Finds nearby care homes, with walking distance and time to each.",
+          "Drafts an introduction email in the young person's own name.",
+          "Reminds about following up if there is no reply.",
+          "Polishes a visit report afterwards, so it reads clearly.",
+          "Points to free dementia awareness training.",
         ],
       },
       {
-        heading: "What it does NOT do (you stay in control)",
+        heading: "What it does NOT do",
         items: [
-          "It drafts your email, but YOU send it. It never sends it for you.",
-          "It never contacts, emails or phones a care home on your behalf.",
-          "It does not take any action for you or make decisions for you.",
-          "It is not a medical or crisis service, and it cannot guarantee you a place.",
+          "It drafts the introduction email, but the young person sends it themselves. It never sends it for them.",
+          "It never contacts, emails or phones a care home on anyone's behalf.",
+          "It does not take any action for the young person or make decisions for them.",
+          "It is not a medical or crisis service, and it cannot guarantee a place.",
         ],
       },
     ],
@@ -104,18 +104,26 @@ const OWNER_GUIDE: Section[] = [
       {
         items: [
           "In one sentence: it helps a young person find a local care home and drafts a first introduction email that they then send themselves, in minutes, instead of YOPEY doing this outreach by manual phone calls.",
-          "It solves: finding CQC registered homes nearby, drafting a good intro email, chasing follow ups, polishing visit reports, and surfacing safeguarding concerns to staff.",
           "It also gates signups to age 16 and over, runs a short Dementia Attitudes survey at signup (to measure how volunteering changes attitudes), and can be embedded on partner websites as a floating chat bubble.",
+        ],
+      },
+      {
+        heading: "What it does",
+        items: [
+          "Finds nearby care homes, with walking distance and time to each.",
+          "Drafts an introduction email in the young person's own name.",
+          "Reminds about following up if there is no reply.",
+          "Polishes a visit report afterwards, so it reads clearly.",
+          "Points to free dementia awareness training.",
         ],
       },
       {
         heading: "What it does NOT do",
         items: [
-          "Send the introduction email or contact a care home on the young person's behalf. It drafts the email; the young person sends it themselves and stays in control.",
-          "Take any action for a young person or make decisions for them.",
-          "Provide care or medical advice.",
-          "Guarantee a placement or match.",
-          "Replace human safeguarding judgement.",
+          "It drafts the introduction email, but the young person sends it themselves. It never sends it for them.",
+          "It never contacts, emails or phones a care home on anyone's behalf.",
+          "It does not take any action for the young person or make decisions for them.",
+          "It is not a medical or crisis service, and it cannot guarantee a place.",
         ],
       },
     ],
@@ -322,9 +330,9 @@ export default function GuidePage() {
           </button>
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-[1fr,22rem] items-start">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr,22rem] items-start min-w-0">
           {/* Guide content */}
-          <div className="space-y-4 order-2 lg:order-1">
+          <div className="space-y-4 order-2 lg:order-1 min-w-0">
             {audience === "owner" && (
               <div className="rounded-xl bg-yopey-primary/5 border border-yopey-primary/20 text-sm text-yopey-inkSoft px-4 py-3">
                 The live coordinator tools are on the{" "}
@@ -340,7 +348,7 @@ export default function GuidePage() {
           </div>
 
           {/* AI helper — sticky alongside the guide on desktop */}
-          <div className="order-1 lg:order-2 lg:sticky lg:top-6">
+          <div className="order-1 lg:order-2 lg:sticky lg:top-6 min-w-0">
             <GuideAssistant />
           </div>
         </div>

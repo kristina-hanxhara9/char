@@ -169,7 +169,7 @@ export default function SafeguardingPanel({ password }: { password: string }) {
               <div className="mt-3 flex flex-wrap gap-2">
                 <button
                   onClick={() => viewTranscript(a.user_id)}
-                  className="px-3 py-1.5 rounded-lg bg-yopey-primary/10 text-yopey-primary text-xs font-semibold hover:bg-yopey-primary/20 transition min-h-[36px]"
+                  className="px-3 py-1.5 rounded-lg bg-yopey-primary/10 text-yopey-primary text-xs font-semibold hover:bg-yopey-primary/20 transition min-h-[44px]"
                 >
                   {openUserId === a.user_id ? "Hide conversation" : "Read conversation"}
                 </button>
@@ -177,7 +177,7 @@ export default function SafeguardingPanel({ password }: { password: string }) {
                   <button
                     onClick={() => resolve(a)}
                     disabled={busyId === a.id}
-                    className="px-3 py-1.5 rounded-lg bg-green-50 text-green-700 text-xs font-semibold border border-green-200 hover:bg-green-100 transition disabled:opacity-50 min-h-[36px]"
+                    className="px-3 py-1.5 rounded-lg bg-green-50 text-green-700 text-xs font-semibold border border-green-200 hover:bg-green-100 transition disabled:opacity-50 min-h-[44px]"
                   >
                     {busyId === a.id ? "..." : "Mark actioned"}
                   </button>

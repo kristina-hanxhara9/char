@@ -330,9 +330,9 @@ export default function GuidePage() {
           </button>
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-[1fr,22rem] items-start">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr,22rem] items-start min-w-0">
           {/* Guide content */}
-          <div className="space-y-4 order-2 lg:order-1">
+          <div className="space-y-4 order-2 lg:order-1 min-w-0">
             {audience === "owner" && (
               <div className="rounded-xl bg-yopey-primary/5 border border-yopey-primary/20 text-sm text-yopey-inkSoft px-4 py-3">
                 The live coordinator tools are on the{" "}
@@ -348,7 +348,7 @@ export default function GuidePage() {
           </div>
 
           {/* AI helper — sticky alongside the guide on desktop */}
-          <div className="order-1 lg:order-2 lg:sticky lg:top-6">
+          <div className="order-1 lg:order-2 lg:sticky lg:top-6 min-w-0">
             <GuideAssistant />
           </div>
         </div>

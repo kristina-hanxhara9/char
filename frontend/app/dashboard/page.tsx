@@ -183,7 +183,7 @@ export default function DashboardPage() {
           <button
             onClick={() => handleDeleteUser(r.id, r.full_name)}
             disabled={busyRow === r.id}
-            className="px-3 py-1.5 rounded-lg bg-red-50 text-red-700 text-xs font-semibold border border-red-200 hover:bg-red-100 transition disabled:opacity-50 min-h-[36px]"
+            className="px-3 py-1.5 rounded-lg bg-red-50 text-red-700 text-xs font-semibold border border-red-200 hover:bg-red-100 transition disabled:opacity-50 min-h-[44px]"
           >
             {busyRow === r.id ? "..." : "Delete"}
           </button>
@@ -215,7 +215,7 @@ export default function DashboardPage() {
                   handleMarkReply(contactId, "accepted", r.care_home_name)
                 }
                 disabled={busyRow === contactId}
-                className="px-2.5 py-1.5 rounded-lg bg-green-50 text-green-700 text-xs font-semibold border border-green-200 hover:bg-green-100 transition disabled:opacity-50 min-h-[36px]"
+                className="px-2.5 py-1.5 rounded-lg bg-green-50 text-green-700 text-xs font-semibold border border-green-200 hover:bg-green-100 transition disabled:opacity-50 min-h-[44px]"
                 title="Accepted — sends welcome email"
               >
                 ✓ Yes
@@ -225,7 +225,7 @@ export default function DashboardPage() {
                   handleMarkReply(contactId, "rejected", r.care_home_name)
                 }
                 disabled={busyRow === contactId}
-                className="px-2.5 py-1.5 rounded-lg bg-gray-50 text-gray-700 text-xs font-semibold border border-gray-200 hover:bg-gray-100 transition disabled:opacity-50 min-h-[36px]"
+                className="px-2.5 py-1.5 rounded-lg bg-gray-50 text-gray-700 text-xs font-semibold border border-gray-200 hover:bg-gray-100 transition disabled:opacity-50 min-h-[44px]"
                 title="Rejected — stops nudges"
               >
                 ✗ No
@@ -248,7 +248,7 @@ export default function DashboardPage() {
           <button
             onClick={() => handleDeleteUser(r.user_id, r.full_name)}
             disabled={busyRow === r.user_id}
-            className="px-3 py-1.5 rounded-lg bg-red-50 text-red-700 text-xs font-semibold border border-red-200 hover:bg-red-100 transition disabled:opacity-50 min-h-[36px]"
+            className="px-3 py-1.5 rounded-lg bg-red-50 text-red-700 text-xs font-semibold border border-red-200 hover:bg-red-100 transition disabled:opacity-50 min-h-[44px]"
           >
             {busyRow === r.user_id ? "..." : "Delete"}
           </button>

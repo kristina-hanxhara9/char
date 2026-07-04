@@ -141,8 +141,9 @@ export default function Step2Survey({ data, setData, onNext, onBack }: Props) {
         <button
           type="button"
           onClick={handleNext}
-          aria-disabled={!allAnswered}
-          className="flex-[2] px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-md hover:opacity-90 transition active:scale-[0.98] min-h-[52px]"
+          className={`flex-[2] px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-md hover:opacity-90 transition active:scale-[0.98] min-h-[52px] ${
+            allAnswered ? "" : "opacity-60"
+          }`}
         >
           {allAnswered ? "Continue →" : `Continue → (${answeredCount}/10)`}
         </button>

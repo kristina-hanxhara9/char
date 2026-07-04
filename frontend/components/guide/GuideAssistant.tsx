@@ -92,7 +92,7 @@ export default function GuideAssistant() {
             key={s}
             onClick={() => send(s)}
             disabled={loading}
-            className="whitespace-nowrap text-xs px-3 py-1.5 rounded-full bg-yopey-accent/40 text-yopey-primary border border-yopey-accent hover:bg-yopey-accent/70 transition disabled:opacity-50 min-h-[32px]"
+            className="whitespace-nowrap text-xs px-4 rounded-full bg-yopey-accent/40 text-yopey-primary border border-yopey-accent hover:bg-yopey-accent/70 transition disabled:opacity-50 min-h-[44px]"
           >
             {s}
           </button>

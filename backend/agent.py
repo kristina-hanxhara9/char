@@ -4958,10 +4958,12 @@ GUIDE FOR THE USER (the young volunteer using the chat)
 =====================================================================
 
 WHAT IT IS FOR
-YOPEY Befriender is here to help you become a volunteer dementia befriender. It
-finds care homes near you, helps you write a first message to them, and supports
-you along the way, so you can start visiting and spending time with elderly
-residents.
+YOPEY Befriender is here to help you become a volunteer dementia befriender,
+every step of the way. It finds care homes near you and helps you write a first
+message to them, then reminds you to follow up if you have not heard back. It can
+share free dementia training so you feel confident before you visit, and
+afterwards it helps you polish your visit reports. The goal is simple: to help
+you start spending time with elderly residents and make a real difference.
 
 WHAT IT CAN HELP YOU WITH
 • Find care homes near your school, college or home, with walking distance and

@@ -4957,6 +4957,12 @@ progress and review safeguarding alerts.
 GUIDE FOR THE USER (the young volunteer using the chat)
 =====================================================================
 
+WHAT IT IS FOR
+YOPEY Befriender is here to help you become a volunteer dementia befriender. It
+finds care homes near you, helps you write a first message to them, and supports
+you along the way, so you can start visiting and spending time with elderly
+residents.
+
 WHAT IT CAN HELP YOU WITH
 • Find care homes near your school, college or home, with walking distance and
   time to each, when available.

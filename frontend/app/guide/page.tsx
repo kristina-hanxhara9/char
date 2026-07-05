@@ -19,6 +19,11 @@ const USER_GUIDE: Section[] = [
     title: "What this agent can help you with",
     blocks: [
       {
+        items: [
+          "YOPEY Befriender is a friendly chat that helps you find a local care home to volunteer at as a dementia befriender, and helps you get in touch with it.",
+        ],
+      },
+      {
         heading: "Ask it things like",
         items: [
           "“Find care homes near IP33 3YU.”",

@@ -20,7 +20,7 @@ const USER_GUIDE: Section[] = [
     blocks: [
       {
         items: [
-          "YOPEY Befriender is a friendly chat that helps you find a local care home to volunteer at as a dementia befriender, and helps you get in touch with it.",
+          "YOPEY Befriender is here to help you become a volunteer dementia befriender. It finds care homes near you, helps you write a first message to them, and supports you along the way, so you can start visiting and spending time with elderly residents.",
         ],
       },
       {

@@ -130,6 +130,43 @@ if not (GEMINI_KEY and SUPABASE_URL and SUPABASE_KEY):
 BRAIN_MODEL = "gemini-3.5-flash"        # agentic tool use + safeguarding judgement
 SEARCH_MODEL = "gemini-3.1-flash-lite"  # cheap Google-Search-grounded lookups
 
+# Allowlist for the dynamic "fresh advice" search (search_dementia_advice). The
+# grounded model can cite anything on the open web, so we drop every source whose
+# host isn't one of these authoritative UK dementia/care bodies BEFORE the advice
+# reaches the chat brain — the guarantee behind calling these "trusted sources".
+TRUSTED_ADVICE_DOMAINS = (
+    "nhs.uk", "alzheimers.org.uk", "dementiauk.org", "scie.org.uk",
+    "ageuk.org.uk", "skillsforcare.org.uk", "cqc.org.uk", "gov.uk",
+    "dementiafriends.org.uk", "alzheimersresearchuk.org", "belightcare.com",
+)
+# Social platforms carry both trusted and untrusted voices, so a bare youtube.com
+# / instagram.com host is NOT enough — the URL must also name one of the specific
+# educators the curated scripts already endorse (Adria Thompson / BeLight,
+# Bailey Greetham-Clark). Matched as lowercase substrings of the full URL.
+TRUSTED_SOCIAL_HOSTS = ("youtube.com", "youtu.be", "instagram.com")
+TRUSTED_SOCIAL_HANDLES = (
+    "belightcare", "adriathompson", "adria-thompson",
+    "bailey_greetham", "baileygreetham", "begreatfitness",
+)
+
+
+def _is_trusted_source(url: Optional[str]) -> bool:
+    """True only when `url` is on an allowlisted org domain, or is a social link
+    that names one of the vetted educators. Domain match is suffix-based so
+    subdomains (www.nhs.uk, learning.alzheimers.org.uk) pass but look-alikes
+    (evilnhs.uk) do not."""
+    if not url:
+        return False
+    u = url.strip().lower()
+    host = (urlparse(u if "://" in u else "http://" + u).hostname or "").strip(".")
+    if not host:
+        return False
+    if any(host == d or host.endswith("." + d) for d in TRUSTED_ADVICE_DOMAINS):
+        return True
+    if any(host == s or host.endswith("." + s) for s in TRUSTED_SOCIAL_HOSTS):
+        return any(handle in u for handle in TRUSTED_SOCIAL_HANDLES)
+    return False
+
 # 60s cap: google-genai sets no default timeout, and /api/chat is synchronous
 # — a hung call must not pin a worker.
 _GEMINI_HTTP_OPTS = genai_types.HttpOptions(timeout=60_000)
@@ -2135,6 +2172,36 @@ TOOL_DECLARATIONS: list[dict] = [
         },
     },
     {
+        "name": "search_dementia_advice",
+        "description": (
+            "Search trusted UK sources for the LATEST dementia / befriending ADVICE "
+            "when a young person asks a question the curated scripts in your prompt "
+            "don't already cover, or asks for the 'newest' or 'latest' thinking "
+            "(e.g. how to respond to a specific behaviour, communication techniques, "
+            "activity ideas). This is for guidance/advice — use find_dementia_training "
+            "instead when they want training courses or resources to complete. Results "
+            "are filtered to reputable bodies (Alzheimer's Society, Dementia UK, NHS, "
+            "SCIE, Age UK, Skills for Care, CQC) plus the vetted educators Adria "
+            "Thompson and Bailey Greetham-Clark. Returns {answer, sources:[{title, "
+            "url, provider}]}, or {results: [], note: 'no_trusted_source'} when "
+            "nothing trusted was found — in that case fall back to the curated scripts."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The young person's dementia/befriending question, in plain English.",
+                },
+                "focus": {
+                    "type": "string",
+                    "description": "Optional angle to emphasise, e.g. 'communication', 'agitation', 'activities'.",
+                },
+            },
+            "required": ["question"],
+        },
+    },
+    {
         "name": "mark_care_home_replied",
         "description": (
             "Record that a care home has replied to the young person, with the "
@@ -2752,6 +2819,92 @@ def find_dementia_training_resources(focus: Optional[str] = None) -> dict:
         if r.get("url") and r.get("is_free", True)
     ]
     return {"results": cleaned[:6]}
+
+
+DEMENTIA_ADVICE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string"},
+        "sources": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "url": {"type": "string"},
+                    "provider": {"type": "string"},
+                    "last_updated": {"type": "string"},
+                },
+                "required": ["title", "url"],
+            },
+        },
+    },
+    "required": ["answer", "sources"],
+}
+
+
+def search_dementia_advice(question: str, focus: Optional[str] = None) -> dict:
+    """
+    Use Google-Search-grounded Gemini to fetch fresh dementia/befriending ADVICE
+    (not training courses — that's find_dementia_training_resources) synthesised
+    from reputable UK sources, then drop every citation that isn't on our trusted
+    allowlist. Lets the chat brain answer questions the curated scripts don't
+    cover, using the latest guidance, without a human vetting each source first.
+    """
+    if not gemini_client:
+        return {"error": "Gemini not configured", "results": []}
+
+    # The question comes from the young person via the model — flatten it so it
+    # can't smuggle instructions into the grounded prompt (same hygiene as the
+    # other user-derived web searches).
+    clean_q = _inline_safe(question, 200)
+    if not clean_q:
+        return {"results": [], "note": "no_trusted_source"}
+    focus_hint = f" Angle to emphasise: {_inline_safe(focus, 80)}." if focus else ""
+
+    prompt = (
+        f"A young UK volunteer dementia befriender (aged 16-21) asks:\n"
+        f'"{clean_q}"{focus_hint}\n\n'
+        f"Answer with practical, kind, non-clinical advice they can use on a care "
+        f"home visit. Use ONLY reputable UK sources: Alzheimer's Society, Dementia "
+        f"UK, NHS, Social Care Institute for Excellence (SCIE), Age UK, Skills for "
+        f"Care, CQC, Alzheimer's Research UK, Dementia Friends, or the vetted "
+        f"educators Adria Thompson (BeLight Care) and Bailey Greetham-Clark. "
+        f"Prefer 2024-2026 guidance. Return STRICT JSON only:\n\n"
+        '{"answer": "2-4 sentences of practical advice in plain English",\n'
+        ' "sources": [\n'
+        '   {"title": "...", "url": "https://...", "provider": "organisation or '
+        'educator name", "last_updated": "year or date if known, else \'\'"}\n'
+        " ]}\n\n"
+        "Rules:\n"
+        " - Every claim in `answer` must be supported by a source you actually found.\n"
+        " - Cite the real page URL for each source — never invent a URL.\n"
+        " - If you cannot find trusted guidance, return an empty `sources` array.\n"
+        " - Do not include general search engines, forums, blogs, or news sites."
+    )
+
+    try:
+        text = _grounded_search(prompt, response_schema=DEMENTIA_ADVICE_SCHEMA)
+    except Exception as e:
+        return {"error": f"Web search error: {e}", "results": []}
+
+    data = _parse_json_response(text)
+    if data is None:
+        return {"error": "Search returned no parseable JSON", "results": []}
+
+    # Server-side allowlist gate — the trust guarantee. Anything not on an
+    # authoritative domain (or a vetted educator's social channel) is dropped, so
+    # the brain never sees, and can never cite, an unvetted source.
+    trusted = [
+        s for s in (data.get("sources") or [])
+        if _is_trusted_source(s.get("url"))
+    ]
+    if not trusted:
+        # No trusted backing survived — tell the brain so it falls back honestly
+        # to the curated scripts rather than presenting an unsourced answer.
+        return {"results": [], "note": "no_trusted_source"}
+
+    return {"answer": (data.get("answer") or "").strip(), "sources": trusted[:5]}
 
 
 def list_curated_training() -> list[dict]:
@@ -3450,6 +3603,13 @@ def execute_tool(tool_name: str, args: dict, user_id: str, trigger_message: Opti
 
     if tool_name == "find_dementia_training":
         result = find_dementia_training_resources(focus=args.get("focus"))
+        return json.dumps(result)
+
+    if tool_name == "search_dementia_advice":
+        result = search_dementia_advice(
+            question=args.get("question", ""),
+            focus=args.get("focus"),
+        )
         return json.dumps(result)
 
     if tool_name == "mark_care_home_replied":

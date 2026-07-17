@@ -687,6 +687,18 @@ def _fetch_cqc_care_homes(location: dict, max_radius: float = 10) -> list | dict
         for detail in executor.map(_detail, loc_ids):
             if not detail:
                 continue
+
+            # Skip homes that are no longer operational. CQC keeps DEREGISTERED
+            # (archived) locations in the register, and their /location/{id} page
+            # shows "Archived" — a closed home is worse than none (the user's
+            # CW10 0SR test surfaced two shut homes, and clicking through hit an
+            # archived profile). Only surface currently-registered care homes.
+            reg_status = (detail.get("registrationStatus") or "").strip().lower()
+            if reg_status and reg_status != "registered":
+                continue
+            if detail.get("deregistrationDate"):
+                continue
+
             lat = detail.get("onspdLatitude")
             lng = detail.get("onspdLongitude")
             if not (lat and lng):
@@ -1073,7 +1085,9 @@ def _origin_key(origin_lat: Optional[float], origin_lng: Optional[float]) -> str
 # rating (old v3 web rows still hold a model-asserted one), so refresh them.
 # v5: multi-authority CQC discovery (wider result set), walking distances +
 # time, and carehome.co.uk manager cross-check — all change the payload.
-SEARCH_CACHE_VERSION = 5
+# v6: filter out deregistered/archived CQC homes + reject placeholder emails —
+# old cached rows may still list closed homes or fake addresses, so refresh.
+SEARCH_CACHE_VERSION = 6
 
 
 def _check_search_cache(
@@ -1300,6 +1314,7 @@ def search_care_homes(
     max_results: int = 5,
     origin_lat: Optional[float] = None,
     origin_lng: Optional[float] = None,
+    exclude_names: Optional[list[str]] = None,
 ) -> dict:
     """
     Find care homes near a UK postcode. Default radius is 1 mile (Tony's spec:
@@ -1311,9 +1326,21 @@ def search_care_homes(
     dense London postcode came back empty at every step), and each extra call
     costs ~10s plus a flake chance. Results are sorted nearest-first.
 
+    `exclude_names` lets "find me another one" return the NEXT nearest homes
+    instead of repeating ones already shown. When set, we skip the cache (it's a
+    dynamic, one-off query) and don't cache the filtered result.
+
     Result envelope includes `actual_radius_miles` so the bot can mention if it
     had to look further out than the teen's immediate area.
     """
+    # A "find another" request is dynamic — bypass the cache/coalescing entirely
+    # and compute a fresh, filtered result.
+    if exclude_names:
+        return _search_care_homes_uncached(
+            postcode, radius_miles, max_results, origin_lat, origin_lng,
+            exclude_names=exclude_names,
+        )
+
     origin_key = _origin_key(origin_lat, origin_lng)
     # Cache check uses the requested (starting) radius — most teens search the
     # same postcode again next session, so a hit returns instantly. Scoped to
@@ -1389,7 +1416,12 @@ def _search_care_homes_uncached(
     max_results: int,
     origin_lat: Optional[float] = None,
     origin_lng: Optional[float] = None,
+    exclude_names: Optional[list[str]] = None,
 ) -> dict:
+    # Names the caller has already shown ("find another") — filtered out so we
+    # return the NEXT nearest, not repeats. When set, we never write to cache.
+    excluded = {n.strip().lower() for n in (exclude_names or []) if n and n.strip()}
+
     location = postcode_to_latlng(postcode)
     if "error" in location:
         return {
@@ -1425,6 +1457,11 @@ def _search_care_homes_uncached(
             # then re-sort so the radius steps below filter on walking miles.
             _apply_walking_distances(cqc_homes, location["latitude"], location["longitude"], max_radius)
             cqc_homes.sort(key=lambda h: h["distance_miles"])
+            # Drop homes already shown ("find another") so we surface new ones.
+            if excluded:
+                cqc_homes = [
+                    h for h in cqc_homes if (h.get("name") or "").strip().lower() not in excluded
+                ]
             # Multi-authority fetch; radius widening is a pure in-memory filter.
             for step in steps:
                 within = [h for h in cqc_homes if h["distance_miles"] <= step]
@@ -1442,9 +1479,20 @@ def _search_care_homes_uncached(
                         print(f"[search] auto-expanded {redact_postcode(postcode)} from {radius_miles}mi → {step}mi to find results")
                     _enrich_with_emails(attempt["results"], postcode)
                     _enrich_with_managers(attempt["results"], postcode)
-                    _save_search_to_cache(postcode, radius_miles, max_results, attempt, origin_key)
+                    if not excluded:
+                        _save_search_to_cache(postcode, radius_miles, max_results, attempt, origin_key)
                     return attempt
             # No homes within 10 miles in these authorities → fall through to web.
+            # (If everything got excluded, tell the caller there are no more.)
+            if excluded:
+                return {
+                    "search_area": location.get("admin_district") or postcode,
+                    "source": "cqc",
+                    "results": [],
+                    "actual_radius_miles": max_radius,
+                    "requested_radius_miles": radius_miles,
+                    "note": "No more care homes nearby beyond the ones already shown.",
+                }
 
     attempt = _search_care_homes_via_web(
         postcode, max_results, radius_miles=max_radius, prefetched_location=location
@@ -1456,6 +1504,11 @@ def _search_care_homes_uncached(
         return attempt
 
     results = attempt.get("results") or []
+    if excluded:
+        results = [
+            h for h in results if (h.get("name") or "").strip().lower() not in excluded
+        ]
+        attempt["results"] = results
     results.sort(key=lambda h: h.get("distance_miles") or 99)
     if results:
         furthest = max((h.get("distance_miles") or 0) for h in results)
@@ -1470,7 +1523,8 @@ def _search_care_homes_uncached(
         _enrich_with_managers(results, postcode)
     else:
         attempt["actual_radius_miles"] = max_radius
-    _save_search_to_cache(postcode, radius_miles, max_results, attempt, origin_key)
+    if not excluded:
+        _save_search_to_cache(postcode, radius_miles, max_results, attempt, origin_key)
     return attempt
 
 
@@ -1491,6 +1545,30 @@ GENERIC_LOCAL_PARTS = {"info", "enquiries", "contact", "admin", "reception", "of
 def _looks_like_generic(email: str) -> bool:
     local = email.split("@", 1)[0].lower()
     return local in GENERIC_LOCAL_PARTS
+
+
+# Obvious placeholder / example addresses a grounded search sometimes fabricates
+# despite "never invent" (live test: john.smith@hello.com for a real home). A
+# wrong address is worse than none, so these are rejected and the home falls back
+# to the directory link.
+_PLACEHOLDER_EMAIL_DOMAINS = {
+    "example.com", "example.org", "example.net", "email.com", "hello.com",
+    "domain.com", "test.com", "sample.com", "company.com", "yourcompany.com",
+    "yourdomain.com", "mycompany.com", "acme.com", "placeholder.com",
+    "carehome.com", "care-home.com", "youremail.com",
+}
+_PLACEHOLDER_EMAIL_LOCALS = {
+    "john.smith", "jane.smith", "john.doe", "jane.doe", "firstname.lastname",
+    "first.last", "name.surname", "firstname", "lastname", "surname",
+    "example", "test", "user", "youremail", "your.email", "email",
+}
+
+
+def _is_placeholder_email(email: str) -> bool:
+    """True for obviously-invented example addresses (john.smith@hello.com,
+    info@example.com, firstname.lastname@..., etc.)."""
+    local, _, domain = email.strip().lower().partition("@")
+    return domain in _PLACEHOLDER_EMAIL_DOMAINS or local in _PLACEHOLDER_EMAIL_LOCALS
 
 
 # Two-label public suffixes common for UK orgs — enough to find the
@@ -1953,6 +2031,8 @@ def find_email_via_web_search(
     # the info@/contact@ email displayed on the homepage. No LLM, no cost.
     if website:
         scraped = _scrape_email_from_website(website)
+        if scraped and _is_placeholder_email(scraped):
+            scraped = None  # template/example address baked into the page markup
         if scraped:
             is_generic = _looks_like_generic(scraped)
             _save_email_to_cache(
@@ -1999,6 +2079,9 @@ def find_email_via_web_search(
         return {"found": False, "reason": f"Web search error: {e}"}
 
     matches = EMAIL_RE.findall(text)
+    # Drop obviously-fabricated placeholders (john.smith@hello.com, ...@example.com)
+    # so we never surface an invented address; better to fall back to the link.
+    matches = [m for m in matches if not _is_placeholder_email(m)]
     if not matches:
         return {"found": False, "reason": "No email found via web search"}
 
@@ -2055,7 +2138,9 @@ TOOL_DECLARATIONS: list[dict] = [
             "and returns results from whichever step found them — check the "
             "`actual_radius_miles` field in the result and tell the teen if it had "
             "to expand. Returns the closest care homes with name, address, phone, "
-            "manager name, CQC rating, email, and distance."
+            "manager name, CQC rating, email, and distance. To fetch DIFFERENT homes "
+            "when the user asks for 'another' or 'more', pass the names already shown "
+            "in `exclude_names`."
         ),
         "parameters": {
             "type": "object",
@@ -2066,6 +2151,16 @@ TOOL_DECLARATIONS: list[dict] = [
                     "description": "Starting search radius in miles. Default 1 (will auto-expand if no results).",
                 },
                 "max_results": {"type": "integer", "description": "Max care homes. Default 5."},
+                "exclude_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Names of care homes ALREADY shown to this user in the chat. "
+                        "Set this when they ask for 'another', 'more', or 'a different "
+                        "one' so the search returns the NEXT nearest homes instead of "
+                        "repeating ones they've seen."
+                    ),
+                },
             },
             "required": ["postcode"],
         },
@@ -3408,12 +3503,19 @@ def execute_tool(tool_name: str, args: dict, user_id: str, trigger_message: Opti
             ):
                 origin_lat = cached_school["latitude"]
                 origin_lng = cached_school["longitude"]
+        raw_exclude = args.get("exclude_names") or []
+        exclude_names = (
+            [str(n) for n in raw_exclude if str(n).strip()]
+            if isinstance(raw_exclude, list)
+            else None
+        )
         results = search_care_homes(
             postcode=searched_postcode,
             radius_miles=args.get("radius_miles", 10),
             max_results=args.get("max_results", 5),
             origin_lat=origin_lat,
             origin_lng=origin_lng,
+            exclude_names=exclude_names,
         )
         return json.dumps(results)
 

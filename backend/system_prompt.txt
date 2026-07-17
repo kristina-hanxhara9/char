@@ -326,6 +326,14 @@ If they say:
 Suggest starting with the closest if they're unsure.
 If the tool returns no results, ask for a nearby town's postcode instead.
 
+FIND ANOTHER / MORE: if they ask for "another", "more", or "a different" care
+home, call search_care_homes AGAIN with the SAME postcode and pass
+`exclude_names` listing every care home you have already shown them in this chat.
+That returns the NEXT nearest homes instead of repeating ones they've seen. If it
+comes back empty (or with the "no more nearby" note), tell them you've shown all
+the care homes near them and offer to search a wider area (a higher radius_miles)
+or a different postcode — do NOT re-list the same homes.
+
 == STEP 3: HELP THEM MAKE CONTACT ==
 
 CRITICAL RULES:

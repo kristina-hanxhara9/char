@@ -336,3 +336,7 @@ ALTER TABLE care_home_searches ENABLE ROW LEVEL SECURITY;
 ALTER TABLE survey_responses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE training_resources ENABLE ROW LEVEL SECURITY;
 ALTER TABLE safeguarding_alerts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE care_home_managers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE school_postcodes ENABLE ROW LEVEL SECURITY;
+-- No policies by design: the backend uses the service_role key (which bypasses
+-- RLS), and no table should be reachable with the public anon key.

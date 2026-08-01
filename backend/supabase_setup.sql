@@ -326,6 +326,20 @@ CREATE INDEX idx_safeguarding_open
 CREATE INDEX idx_safeguarding_user ON safeguarding_alerts (user_id);
 
 
+-- 11. ADMIN USERS — coordinators who log into the dashboard. Each has their own
+-- @yopey.org email + hashed password (PBKDF2), verified by an emailed code.
+-- No shared password. Only reachable via the backend's service_role key.
+CREATE TABLE IF NOT EXISTS admin_users (
+    email TEXT PRIMARY KEY,                 -- lowercased @yopey.org address
+    password_hash TEXT,                     -- pbkdf2_sha256$iters$salt$hash
+    verified BOOLEAN DEFAULT FALSE,         -- true once the emailed code is confirmed
+    verification_code_hash TEXT,            -- HMAC of the 6-digit code (nullable)
+    code_expires_at TIMESTAMPTZ,            -- code TTL (nullable)
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    last_login_at TIMESTAMPTZ
+);
+
+
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE contacts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE conversations ENABLE ROW LEVEL SECURITY;
@@ -338,5 +352,6 @@ ALTER TABLE training_resources ENABLE ROW LEVEL SECURITY;
 ALTER TABLE safeguarding_alerts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE care_home_managers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE school_postcodes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE admin_users ENABLE ROW LEVEL SECURITY;
 -- No policies by design: the backend uses the service_role key (which bypasses
 -- RLS), and no table should be reachable with the public anon key.

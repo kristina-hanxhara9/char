@@ -192,10 +192,16 @@ cases) and set `SAFEGUARDING_RETENTION_DAYS` accordingly.
 
 ## 6. Access control
 
-- The dashboard (including the Safeguarding tab and transcripts) is behind a
-  shared password (`DASHBOARD_PASSWORD`). **Action for YOPEY:** use a strong,
-  unique value and share it only with staff who need it (ideally just the DSL
-  and coordinator). Consider per-user logins in a future iteration.
+- The dashboard (including the Safeguarding tab and transcripts) requires a
+  per-coordinator login: each staff member signs up with their own
+  `@yopey.org` email and password, confirmed by a 6 digit code emailed to that
+  inbox. Only addresses on `ADMIN_EMAIL_DOMAIN` (default `yopey.org`) can
+  register, passwords are stored as salted PBKDF2 hashes, and sessions are
+  HMAC signed and expire after 7 days. There is no shared password.
+  **Action for YOPEY:** only give dashboard accounts to staff who need them
+  (ideally just the DSL and coordinator); removing an account revokes access
+  immediately. When a coordinator actions a safeguarding alert, their email is
+  recorded as who resolved it (audit trail).
 - Each young person's own records are protected by a per-user HMAC token, so
   knowing a user id alone does not grant access to their data.
 

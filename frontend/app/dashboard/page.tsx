@@ -6,8 +6,8 @@ import DashboardLogin from "@/components/dashboard/Login";
 import StatsCards from "@/components/dashboard/StatsCards";
 import DataTable from "@/components/dashboard/DataTable";
 import SafeguardingPanel from "@/components/dashboard/SafeguardingPanel";
-import { adminDeleteUser, fetchDashboard, markReply } from "@/lib/api";
-import { dashPasswordStorage } from "@/lib/storage";
+import { adminChangePassword, adminDeleteUser, adminMe, fetchDashboard, markReply } from "@/lib/api";
+import { dashTokenStorage } from "@/lib/storage";
 
 type Tab = "all" | "waiting" | "stuck" | "matched" | "surveys" | "safeguarding";
 
@@ -43,7 +43,8 @@ function scoreColor(score: number | null | undefined) {
 }
 
 export default function DashboardPage() {
-  const [password, setPassword] = useState<string | null>(null);
+  const [token, setToken] = useState<string | null>(null);
+  const [email, setEmail] = useState<string | null>(null);
   const [summary, setSummary] = useState<any>(null);
   const [tab, setTab] = useState<Tab>("all");
   const [rows, setRows] = useState<any[]>([]);
@@ -51,35 +52,43 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyRow, setBusyRow] = useState<string | null>(null);
+  const [showChangePw, setShowChangePw] = useState(false);
 
-  // Restore saved password
+  // Restore saved session token
   useEffect(() => {
-    const stored = dashPasswordStorage.get();
-    if (stored) handleAuth(stored);
+    const stored = dashTokenStorage.get();
+    if (stored) handleAuth(stored, null);
   }, []);
 
-  async function handleAuth(pw: string) {
-    setPassword(pw);
+  async function handleAuth(tok: string, who: string | null) {
+    setToken(tok);
+    if (who) setEmail(who);
     try {
-      const s = await fetchDashboard("summary", pw);
+      const s = await fetchDashboard("summary", tok);
       setSummary(s);
+      // If we restored from storage we don't know the email yet — fetch it.
+      if (!who) {
+        const me = await adminMe(tok).catch(() => null);
+        if (me?.email) setEmail(me.email);
+      }
     } catch (e: any) {
       setError(e.message);
-      dashPasswordStorage.clear();
-      setPassword(null);
+      dashTokenStorage.clear();
+      setToken(null);
+      setEmail(null);
     }
   }
 
   // Refresh rows + stats. For the Surveys tab also pull aggregate stats.
   const reloadCurrentTab = useCallback(async () => {
-    if (!password) return;
+    if (!token) return;
     const t = TABS.find((x) => x.key === tab);
     if (!t) return;
     // The Safeguarding tab is a self-contained component that fetches its own
     // data — skip the generic table fetch (and its summary refresh).
     if (tab === "safeguarding") {
       try {
-        const s = await fetchDashboard("summary", password);
+        const s = await fetchDashboard("summary", token);
         setSummary(s);
       } catch (e: any) {
         setError(e.message);
@@ -90,11 +99,11 @@ export default function DashboardPage() {
     setError(null);
     try {
       const promises: Promise<any>[] = [
-        fetchDashboard<any[]>(t.path, password),
-        fetchDashboard("summary", password),
+        fetchDashboard<any[]>(t.path, token),
+        fetchDashboard("summary", token),
       ];
       if (tab === "surveys") {
-        promises.push(fetchDashboard("survey-stats", password));
+        promises.push(fetchDashboard("survey-stats", token));
       }
       const [data, s, stats] = await Promise.all(promises);
       setRows(data);
@@ -105,21 +114,22 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [password, tab]);
+  }, [token, tab]);
 
   // Load tab data when tab changes
   useEffect(() => {
     reloadCurrentTab();
-  }, [tab, password, reloadCurrentTab]);
+  }, [tab, token, reloadCurrentTab]);
 
   function signOut() {
-    dashPasswordStorage.clear();
-    setPassword(null);
+    dashTokenStorage.clear();
+    setToken(null);
+    setEmail(null);
     setSummary(null);
   }
 
   async function handleDeleteUser(userId: string, fullName: string) {
-    if (!password) return;
+    if (!token) return;
     if (
       !confirm(
         `Permanently delete ${fullName} and ALL their data (chat history, ` +
@@ -131,7 +141,7 @@ export default function DashboardPage() {
     setBusyRow(userId);
     setError(null);
     try {
-      await adminDeleteUser(userId, password);
+      await adminDeleteUser(userId, token);
       await reloadCurrentTab();
     } catch (e: any) {
       setError(e.message || "Delete failed");
@@ -145,14 +155,14 @@ export default function DashboardPage() {
     outcome: "accepted" | "rejected",
     careHomeName: string
   ) {
-    if (!password) return;
+    if (!token) return;
     const label = outcome === "accepted" ? "ACCEPTED" : "REJECTED";
     if (!confirm(`Mark ${careHomeName} as ${label}? (Sends emails if accepted.)`))
       return;
     setBusyRow(contactId);
     setError(null);
     try {
-      await markReply(contactId, outcome, password);
+      await markReply(contactId, outcome, token);
       await reloadCurrentTab();
     } catch (e: any) {
       setError(e.message || "Mark reply failed");
@@ -291,7 +301,7 @@ export default function DashboardPage() {
     ],
   };
 
-  if (!password) return <DashboardLogin onAuth={handleAuth} />;
+  if (!token) return <DashboardLogin onAuth={handleAuth} />;
 
   return (
     <main className="min-h-screen safe-top safe-bottom">
@@ -301,7 +311,12 @@ export default function DashboardPage() {
             <span className="font-extrabold text-xl text-yopey-primary tracking-wide">YOPEY</span>
             <span className="text-base text-yopey-primary/80 italic">Befriender · Dashboard</span>
           </Link>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            {email && (
+              <span className="text-xs text-yopey-primary/80 hidden sm:inline max-w-[180px] truncate">
+                {email}
+              </span>
+            )}
             <Link
               href="/guide"
               className="text-sm text-yopey-primary hover:bg-white/30 font-semibold px-3 py-2 rounded-lg min-h-[40px] flex items-center"
@@ -313,6 +328,12 @@ export default function DashboardPage() {
               className="text-sm text-yopey-primary hover:bg-white/30 font-semibold px-3 py-2 rounded-lg min-h-[40px]"
             >
               Refresh
+            </button>
+            <button
+              onClick={() => setShowChangePw(true)}
+              className="text-sm text-yopey-primary hover:bg-white/30 font-semibold px-3 py-2 rounded-lg min-h-[40px]"
+            >
+              Change password
             </button>
             <button
               onClick={signOut}
@@ -392,7 +413,7 @@ export default function DashboardPage() {
         )}
 
         {tab === "safeguarding" ? (
-          <SafeguardingPanel password={password} />
+          <SafeguardingPanel token={token} />
         ) : loading ? (
           <div className="text-center text-gray-400 py-12">Loading...</div>
         ) : (
@@ -408,6 +429,135 @@ export default function DashboardPage() {
           />
         )}
       </section>
+
+      {showChangePw && token && (
+        <ChangePasswordModal token={token} onClose={() => setShowChangePw(false)} />
+      )}
     </main>
+  );
+}
+
+function ChangePasswordModal({ token, onClose }: { token: string; onClose: () => void }) {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirmPw, setConfirmPw] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    if (next !== confirmPw) {
+      setError("The new passwords do not match.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await adminChangePassword(current, next, token);
+      setDone(true);
+    } catch (err: any) {
+      setError(err.message || "Could not change password");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/40 grid place-items-center px-6"
+      onClick={onClose}
+    >
+      <form
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={submit}
+        className="w-full max-w-sm bg-white rounded-3xl shadow-xl p-6 md:p-8 space-y-4"
+      >
+        <h2 className="text-xl font-extrabold text-yopey-ink">Change password</h2>
+
+        {done ? (
+          <>
+            <div className="rounded-xl bg-green-50 border border-green-200 text-green-800 text-sm px-4 py-3">
+              Your password has been changed.
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-full px-6 py-3 rounded-2xl bg-yopey-primary text-white font-semibold min-h-[48px]"
+            >
+              Done
+            </button>
+          </>
+        ) : (
+          <>
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-1.5">
+                Current password
+              </label>
+              <input
+                type="password"
+                autoComplete="current-password"
+                required
+                value={current}
+                onChange={(e) => setCurrent(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl border-2 border-gray-200 focus:border-yopey-primary focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-1.5">
+                New password
+              </label>
+              <input
+                type="password"
+                autoComplete="new-password"
+                required
+                minLength={10}
+                value={next}
+                onChange={(e) => setNext(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl border-2 border-gray-200 focus:border-yopey-primary focus:outline-none"
+              />
+              <p className="text-xs text-gray-500 mt-1.5">At least 10 characters.</p>
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-1.5">
+                Confirm new password
+              </label>
+              <input
+                type="password"
+                autoComplete="new-password"
+                required
+                minLength={10}
+                value={confirmPw}
+                onChange={(e) => setConfirmPw(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl border-2 border-gray-200 focus:border-yopey-primary focus:outline-none"
+              />
+            </div>
+
+            {error && (
+              <div className="rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3">
+                {error}
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="flex-1 px-6 py-3 rounded-2xl bg-gray-100 text-gray-700 font-semibold min-h-[48px]"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={busy}
+                className="flex-1 px-6 py-3 rounded-2xl bg-yopey-primary text-white font-semibold disabled:opacity-50 min-h-[48px]"
+              >
+                {busy ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </>
+        )}
+      </form>
+    </div>
   );
 }

@@ -25,7 +25,7 @@ function severityChip(sev: string) {
     : "bg-amber-100 text-amber-800 border border-amber-200";
 }
 
-export default function SafeguardingPanel({ password }: { password: string }) {
+export default function SafeguardingPanel({ token }: { token: string }) {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -38,7 +38,7 @@ export default function SafeguardingPanel({ password }: { password: string }) {
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchDashboard<Alert[]>("safeguarding", password);
+      const data = await fetchDashboard<Alert[]>("safeguarding", token);
       setAlerts(data);
     } catch (e: any) {
       setError(e.message);
@@ -50,7 +50,7 @@ export default function SafeguardingPanel({ password }: { password: string }) {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [password]);
+  }, [token]);
 
   async function viewTranscript(userId: string) {
     if (openUserId === userId) {
@@ -62,7 +62,7 @@ export default function SafeguardingPanel({ password }: { password: string }) {
     setTranscript(null);
     setTranscriptLoading(true);
     try {
-      const data = await fetchConversation(userId, password);
+      const data = await fetchConversation(userId, token);
       setTranscript(data.messages);
     } catch (e: any) {
       setError(e.message);
@@ -73,12 +73,11 @@ export default function SafeguardingPanel({ password }: { password: string }) {
   }
 
   async function resolve(alert: Alert) {
-    const who = prompt("Your name (recorded as who actioned this alert):");
-    if (!who || !who.trim()) return;
+    if (!confirm("Mark this alert as actioned? You will be recorded as who resolved it.")) return;
     const notes = prompt("Optional note on what you did (leave blank to skip):") || undefined;
     setBusyId(alert.id);
     try {
-      await resolveSafeguarding(alert.id, who.trim(), password, notes);
+      await resolveSafeguarding(alert.id, token, notes);
       await load();
     } catch (e: any) {
       setError(e.message);

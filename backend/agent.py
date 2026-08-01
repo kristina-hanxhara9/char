@@ -15,6 +15,7 @@ import json
 import math
 import os
 import re
+import secrets
 import socket
 import sys
 import threading
@@ -67,8 +68,16 @@ CQC_SUBSCRIPTION_KEY = os.environ.get("CQC_SUBSCRIPTION_KEY", "").strip()
 # instead of straight-line "as the crow flies". Unset → honest straight-line
 # fallback, so the app works either way.
 ORS_API_KEY = os.environ.get("ORS_API_KEY", "").strip()
-DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "changeme")
-EMAIL_TOKEN_SECRET = os.environ.get("EMAIL_TOKEN_SECRET") or DASHBOARD_PASSWORD
+# DASHBOARD_PASSWORD is NO LONGER used to log into the dashboard (that now needs a
+# real per-user @yopey.org account). Kept only as an optional operator secret for
+# /api/test-reminder. Do not rely on it for auth.
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "").strip()
+# Signs admin session tokens + email-click tokens. MUST be set in production
+# (render.yaml declares it). Falls back to DASHBOARD_PASSWORD only so old email
+# links keep validating during migration.
+EMAIL_TOKEN_SECRET = os.environ.get("EMAIL_TOKEN_SECRET") or DASHBOARD_PASSWORD or "dev-insecure-secret"
+# Only emails on this domain may register/log into the coordinator dashboard.
+ADMIN_EMAIL_DOMAIN = os.environ.get("ADMIN_EMAIL_DOMAIN", "yopey.org").strip().lower()
 # Where safeguarding escalations are emailed. Should be YOPEY's named
 # safeguarding lead. Falls back to EMAIL_FROM's inbox if unset (better than
 # dropping the alert, but the lead should be set explicitly).
@@ -3048,6 +3057,107 @@ def verify_token(token: str) -> Optional[dict]:
         return None
 
 
+# ============================================================
+# ADMIN (coordinator) AUTH — per-user @yopey.org login
+# ============================================================
+# Passwords hashed with stdlib PBKDF2 (no new deps). Sessions are signed with the
+# existing make_token/verify_token HMAC pattern. Sign-up is verified by a 6-digit
+# code emailed to the @yopey.org address, so nobody can claim someone else's email.
+
+ADMIN_SESSION_TTL_DAYS = 7
+ADMIN_CODE_TTL_MINUTES = 15
+_PBKDF2_ITERATIONS = 200_000
+
+
+def _hash_password(password: str) -> str:
+    salt = os.urandom(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, _PBKDF2_ITERATIONS)
+    return (
+        f"pbkdf2_sha256${_PBKDF2_ITERATIONS}$"
+        f"{base64.b64encode(salt).decode()}${base64.b64encode(dk).decode()}"
+    )
+
+
+def _verify_password(password: str, stored: Optional[str]) -> bool:
+    try:
+        algo, iters, salt_b64, hash_b64 = (stored or "").split("$")
+        if algo != "pbkdf2_sha256":
+            return False
+        dk = hashlib.pbkdf2_hmac(
+            "sha256", password.encode(), base64.b64decode(salt_b64), int(iters)
+        )
+        return hmac.compare_digest(dk, base64.b64decode(hash_b64))
+    except Exception:
+        return False
+
+
+def _hash_code(code: str) -> str:
+    """Deterministic HMAC of a short verification code (so we never store it raw)."""
+    return hmac.new(EMAIL_TOKEN_SECRET.encode(), code.encode(), hashlib.sha256).hexdigest()
+
+
+def _new_verification_code() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def normalize_email(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+def is_allowed_admin_email(email: str) -> bool:
+    """Exactly one @, and the domain is EXACTLY ADMIN_EMAIL_DOMAIN (so
+    'x@yopey.org.evil.com' or 'x@notyopey.org' are rejected)."""
+    e = normalize_email(email)
+    if e.count("@") != 1:
+        return False
+    local, domain = e.split("@")
+    return bool(local) and domain == ADMIN_EMAIL_DOMAIN
+
+
+def make_admin_session(email: str) -> str:
+    exp = (datetime.now(timezone.utc) + timedelta(days=ADMIN_SESSION_TTL_DAYS)).isoformat()
+    return make_token({"k": "admin", "email": normalize_email(email), "exp": exp})
+
+
+def _get_admin(email: str) -> Optional[dict]:
+    if not supabase:
+        return None
+    try:
+        res = (
+            supabase.table("admin_users")
+            .select("*")
+            .eq("email", normalize_email(email))
+            .limit(1)
+            .execute()
+        )
+        return res.data[0] if res.data else None
+    except Exception as e:
+        print(f"[admin] lookup failed: {e}")
+        return None
+
+
+def verify_admin_session(token: str) -> Optional[str]:
+    """Return the admin email if the token is a valid, unexpired admin session for
+    an email that is still a verified admin, else None (so deleting the row or
+    letting it expire revokes access)."""
+    data = verify_token(token or "")
+    if not data or data.get("k") != "admin":
+        return None
+    exp = data.get("exp")
+    try:
+        if not exp or datetime.fromisoformat(exp) < datetime.now(timezone.utc):
+            return None
+    except Exception:
+        return None
+    email = normalize_email(data.get("email", ""))
+    if not is_allowed_admin_email(email):
+        return None
+    admin = _get_admin(email)
+    if not admin or not admin.get("verified"):
+        return None
+    return email
+
+
 # ----- Short post-match emails, each with a single yes/no question -----
 
 POST_MATCH_SCHEDULE = [
@@ -4338,26 +4448,196 @@ class MarkReplyRequest(BaseModel):
 
 # ---- Dashboard auth ----
 
-def require_dashboard_auth(x_dashboard_password: str = Header(default="")) -> None:
-    if x_dashboard_password != DASHBOARD_PASSWORD:
-        raise HTTPException(status_code=401, detail="Wrong password")
+def _bearer_token(authorization: str) -> str:
+    """Extract the token from an 'Authorization: Bearer <token>' header."""
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return ""
+
+
+def require_admin(authorization: str = Header(default="")) -> str:
+    """FastAPI dependency: require a valid admin session token. Returns the
+    authenticated admin's email (usable by the endpoint for an audit trail)."""
+    email = verify_admin_session(_bearer_token(authorization))
+    if not email:
+        raise HTTPException(status_code=401, detail="Please sign in.")
+    return email
+
+
+def require_dashboard_auth(authorization: str = Header(default="")) -> str:
+    """Back-compat name kept so every existing Depends(require_dashboard_auth)
+    route now requires a real per-user admin session instead of a shared
+    password."""
+    return require_admin(authorization)
 
 
 def require_user_token(
     user_id: str,
     x_user_token: str = Header(default=""),
-    x_dashboard_password: str = Header(default=""),
+    authorization: str = Header(default=""),
 ) -> None:
     """
     Accepts either:
       • X-User-Token: valid HMAC token for the path user_id (self-service), OR
-      • X-Dashboard-Password: dashboard admin password (Tony's admin actions)
+      • Authorization: Bearer <admin session token> (a coordinator's admin action).
     """
-    if x_dashboard_password and x_dashboard_password == DASHBOARD_PASSWORD:
+    if verify_admin_session(_bearer_token(authorization)):
         return
     if verify_user_token(user_id, x_user_token):
         return
     raise HTTPException(status_code=401, detail="Missing or invalid credentials")
+
+
+# ---- Admin auth endpoints (per-user @yopey.org login) ----
+
+class AdminRegisterRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=10, max_length=200)
+
+
+class AdminVerifyRequest(BaseModel):
+    email: EmailStr
+    code: str = Field(min_length=4, max_length=8)
+
+
+class AdminLoginRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=200)
+
+
+class AdminChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(min_length=10, max_length=200)
+
+
+class AdminSessionResponse(BaseModel):
+    token: str
+    email: str
+
+
+def _require_supabase() -> None:
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Server not configured (database unavailable).")
+
+
+@app.post("/api/admin/register")
+@limiter.limit("5/minute")
+def admin_register(req: AdminRegisterRequest, request: Request):
+    """Start sign-up: validate the @yopey.org email, store a pending account, and
+    email a 6-digit verification code so only the inbox owner can activate it."""
+    _require_supabase()
+    email = normalize_email(req.email)
+    if not is_allowed_admin_email(email):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Only @{ADMIN_EMAIL_DOMAIN} email addresses can access the dashboard.",
+        )
+    existing = _get_admin(email)
+    if existing and existing.get("verified"):
+        raise HTTPException(
+            status_code=409,
+            detail="An account with this email already exists — please sign in.",
+        )
+    code = _new_verification_code()
+    expires = (datetime.now(timezone.utc) + timedelta(minutes=ADMIN_CODE_TTL_MINUTES)).isoformat()
+    try:
+        supabase.table("admin_users").upsert({
+            "email": email,
+            "password_hash": _hash_password(req.password),
+            "verified": False,
+            "verification_code_hash": _hash_code(code),
+            "code_expires_at": expires,
+        }, on_conflict="email").execute()
+    except Exception as e:
+        print(f"[admin] register upsert failed: {e}")
+        raise HTTPException(status_code=500, detail="Could not start sign-up. Please try again.")
+
+    body = (
+        f"Your YOPEY dashboard verification code is {code}\n\n"
+        f"It expires in {ADMIN_CODE_TTL_MINUTES} minutes. "
+        f"If you didn't request this, you can ignore this email."
+    )
+    sent = send_email(email, "Your YOPEY dashboard verification code", body)
+    if not sent:
+        # Dev fallback (no Resend configured): surface the code in the logs so
+        # local testing still works. In production Resend is set, so this never
+        # prints a real code.
+        print(f"[admin] verification code for {redact_email(email)}: {code} (email not sent)")
+    return {"status": "verification_sent"}
+
+
+@app.post("/api/admin/verify", response_model=AdminSessionResponse)
+@limiter.limit("10/minute")
+def admin_verify(req: AdminVerifyRequest, request: Request):
+    """Confirm the emailed code → activate the account and return a session token."""
+    _require_supabase()
+    email = normalize_email(req.email)
+    admin = _get_admin(email)
+    if not admin or not admin.get("verification_code_hash") or not admin.get("code_expires_at"):
+        raise HTTPException(status_code=400, detail="No pending sign-up. Please register again.")
+    try:
+        expired = datetime.fromisoformat(admin["code_expires_at"]) < datetime.now(timezone.utc)
+    except Exception:
+        expired = True
+    if expired:
+        raise HTTPException(status_code=400, detail="That code has expired. Please register again.")
+    if not hmac.compare_digest(admin["verification_code_hash"], _hash_code(req.code.strip())):
+        raise HTTPException(status_code=400, detail="Incorrect code.")
+    try:
+        supabase.table("admin_users").update({
+            "verified": True,
+            "verification_code_hash": None,
+            "code_expires_at": None,
+            "last_login_at": _now_iso(),
+        }).eq("email", email).execute()
+    except Exception as e:
+        print(f"[admin] verify update failed: {e}")
+        raise HTTPException(status_code=500, detail="Could not verify. Please try again.")
+    return AdminSessionResponse(token=make_admin_session(email), email=email)
+
+
+@app.post("/api/admin/login", response_model=AdminSessionResponse)
+@limiter.limit("10/minute")
+def admin_login(req: AdminLoginRequest, request: Request):
+    _require_supabase()
+    email = normalize_email(req.email)
+    admin = _get_admin(email)
+    if admin and not admin.get("verified"):
+        raise HTTPException(
+            status_code=403,
+            detail="Please finish signing up — check your email for the verification code.",
+        )
+    if not admin or not _verify_password(req.password, admin.get("password_hash")):
+        raise HTTPException(status_code=401, detail="Wrong email or password.")
+    try:
+        supabase.table("admin_users").update({"last_login_at": _now_iso()}).eq("email", email).execute()
+    except Exception:
+        pass
+    return AdminSessionResponse(token=make_admin_session(email), email=email)
+
+
+@app.post("/api/admin/change-password")
+@limiter.limit("10/minute")
+def admin_change_password(
+    req: AdminChangePasswordRequest, request: Request, admin_email: str = Depends(require_admin)
+):
+    _require_supabase()
+    admin = _get_admin(admin_email)
+    if not admin or not _verify_password(req.current_password, admin.get("password_hash")):
+        raise HTTPException(status_code=401, detail="Your current password is incorrect.")
+    try:
+        supabase.table("admin_users").update(
+            {"password_hash": _hash_password(req.new_password)}
+        ).eq("email", admin_email).execute()
+    except Exception as e:
+        print(f"[admin] change-password failed: {e}")
+        raise HTTPException(status_code=500, detail="Could not change password. Please try again.")
+    return {"status": "changed"}
+
+
+@app.get("/api/admin/me")
+def admin_me(admin_email: str = Depends(require_admin)):
+    return {"email": admin_email}
 
 
 # ---- Public endpoints ----
@@ -4907,8 +5187,8 @@ def test_reminder(
     The sample care home is clearly labelled TEST and the buttons point at a
     non-existent contact, so clicking them won't touch real data.
     """
-    valid_secrets = [s for s in (CRON_SECRET, DASHBOARD_PASSWORD) if s and s != "changeme"]
-    if not any(hmac.compare_digest(secret, s) for s in valid_secrets):
+    valid_secrets = [s for s in (CRON_SECRET,) if s]
+    if not valid_secrets or not any(hmac.compare_digest(secret, s) for s in valid_secrets):
         raise HTTPException(status_code=401, detail="Bad or missing secret")
     if not RESEND_API_KEY:
         raise HTTPException(status_code=503, detail="RESEND_API_KEY not configured")
@@ -5577,20 +5857,22 @@ def dashboard_conversation(user_id: str):
 
 
 class ResolveAlertRequest(BaseModel):
-    resolved_by: str = Field(min_length=1, max_length=80)
+    # resolved_by is no longer taken from the client — we record the authenticated
+    # admin's email as the real audit trail. Kept optional for back-compat.
+    resolved_by: Optional[str] = Field(default=None, max_length=80)
     notes: Optional[str] = None
 
 
-@app.post(
-    "/api/dashboard/safeguarding/{alert_id}/resolve",
-    dependencies=[Depends(require_dashboard_auth)],
-)
-def resolve_safeguarding(alert_id: str, req: ResolveAlertRequest):
-    """Mark a safeguarding alert as actioned by a named person."""
+@app.post("/api/dashboard/safeguarding/{alert_id}/resolve")
+def resolve_safeguarding(
+    alert_id: str, req: ResolveAlertRequest, admin_email: str = Depends(require_admin)
+):
+    """Mark a safeguarding alert as actioned. Records WHO actioned it (the signed-in
+    coordinator's email) rather than a client-supplied name."""
     try:
         supabase.table("safeguarding_alerts").update({
             "resolved": True,
-            "resolved_by": req.resolved_by,
+            "resolved_by": admin_email,
             "resolved_at": _now_iso(),
             "notes": req.notes,
         }).eq("id", alert_id).execute()

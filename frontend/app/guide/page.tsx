@@ -173,8 +173,16 @@ const OWNER_GUIDE: Section[] = [
       {
         heading: "Where to look",
         items: [
-          "The coordinator dashboard at /dashboard (password protected): signups, who is waiting for a reply, who is stuck, matches, survey scores, and a Safeguarding panel.",
+          "The coordinator dashboard at /dashboard: signups, who is waiting for a reply, who is stuck, matches, survey scores, and a Safeguarding panel.",
           "You can open each young person's full conversation log from the dashboard.",
+        ],
+      },
+      {
+        heading: "Signing in",
+        items: [
+          "Each coordinator creates their own account at /dashboard with their own @yopey.org email and a password, confirmed once by a 6 digit code emailed to them. There is no shared password.",
+          "Only @yopey.org addresses can register, and you can change your own password from the dashboard.",
+          "When a coordinator resolves a safeguarding alert, their email is recorded as who actioned it.",
         ],
       },
       {
@@ -342,9 +350,11 @@ export default function GuidePage() {
               <div className="rounded-xl bg-yopey-primary/5 border border-yopey-primary/20 text-sm text-yopey-inkSoft px-4 py-3">
                 The live coordinator tools are on the{" "}
                 <Link href="/dashboard" className="font-semibold text-yopey-primary underline">
-                  password protected dashboard
+                  coordinator dashboard
                 </Link>
-                . This page explains how the agent works.
+                . Each coordinator signs in with their own @yopey.org email and
+                password (a 6 digit code confirms the account the first time).
+                This page explains how the agent works.
               </div>
             )}
             {sections.map((s) => (

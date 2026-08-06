@@ -5492,8 +5492,9 @@ An AI chatbot that helps young people (aged 16 to 21) volunteer as dementia
 befrienders. It finds nearby CQC registered care homes, drafts an introduction
 email the young person sends themselves, sends gentle reminder emails, polishes
 their visit reports afterwards, and shares dementia awareness training. A
-password protected coordinator dashboard (at /dashboard) lets YOPEY staff track
-progress and review safeguarding alerts.
+coordinator dashboard (at /dashboard) lets YOPEY staff track progress and review
+safeguarding alerts. Each coordinator signs in with their own YOPEY email and
+password.
 
 =====================================================================
 GUIDE FOR THE USER (the young volunteer using the chat)
@@ -5607,9 +5608,15 @@ review the system prompt and training links roughly monthly (CQC data refreshes
 about once a month).
 
 HOW TO MONITOR IT
-• The coordinator dashboard at /dashboard (password protected) shows signups,
-  who is waiting for a reply, who is stuck, matches, survey scores, and a
-  Safeguarding panel. You can open each young person's full conversation log.
+• The coordinator dashboard at /dashboard shows signups, who is waiting for a
+  reply, who is stuck, matches, survey scores, and a Safeguarding panel. You can
+  open each young person's full conversation log.
+• Signing in: each coordinator creates their own account at /dashboard using
+  their own @yopey.org email and a password, confirmed once by a 6 digit code
+  emailed to them. There is no shared password. Only @yopey.org addresses can
+  register, and you can change your own password from the dashboard. When a
+  coordinator resolves a safeguarding alert, their email is recorded as who
+  actioned it.
 • Signs it is failing: empty care home results, distances that look wrong,
   missing nearby homes, unactioned safeguarding alerts, or 503 errors (usually a
   missing or expired API key, so check Render).

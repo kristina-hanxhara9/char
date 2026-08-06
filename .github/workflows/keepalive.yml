@@ -12,7 +12,11 @@ name: Keep backend and Supabase warm
 # 5-min checks) pointed at /api/keepalive.
 on:
   schedule:
-    - cron: "*/10 * * * *" # request every 10 min (GitHub may run it less often)
+    # Hourly. Every-10-min (*/10) was throttled by GitHub and the backlog runs
+    # showed up as "cancelled"; on a private repo it can also exhaust the free
+    # Actions minutes (which would silently stop the daily reminder emails too).
+    # Hourly is plenty to stop Supabase pausing (it idles after ~7 days).
+    - cron: "0 * * * *" # request hourly
   workflow_dispatch: {}
 
 jobs:

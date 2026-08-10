@@ -355,3 +355,22 @@ ALTER TABLE school_postcodes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_users ENABLE ROW LEVEL SECURITY;
 -- No policies by design: the backend uses the service_role key (which bypasses
 -- RLS), and no table should be reachable with the public anon key.
+
+
+-- ============================================================
+-- HARDEN DASHBOARD VIEWS (security_invoker)
+-- ============================================================
+-- By default a Postgres view runs with its OWNER's privileges, which Supabase's
+-- advisor flags as "SECURITY DEFINER": the public anon key could then read these
+-- views via the REST API and bypass the RLS on the underlying tables (e.g.
+-- dashboard_all_users exposes names, emails, ages and postcodes of minors).
+-- security_invoker = on makes each view run as the CALLING role, so anon inherits
+-- its deny-all RLS (no rows) while the backend's service_role key keeps full
+-- access. Requires Postgres 15+ (the Supabase default).
+ALTER VIEW dashboard_survey_pre      SET (security_invoker = on);
+ALTER VIEW dashboard_overview        SET (security_invoker = on);
+ALTER VIEW dashboard_waiting         SET (security_invoker = on);
+ALTER VIEW dashboard_stuck           SET (security_invoker = on);
+ALTER VIEW dashboard_matched         SET (security_invoker = on);
+ALTER VIEW dashboard_monthly_signups SET (security_invoker = on);
+ALTER VIEW dashboard_all_users       SET (security_invoker = on);

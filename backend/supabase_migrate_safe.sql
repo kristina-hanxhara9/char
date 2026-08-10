@@ -83,3 +83,26 @@ ALTER TABLE admin_users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE care_home_managers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE school_postcodes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE safeguarding_alerts ENABLE ROW LEVEL SECURITY;
+
+-- 7. Harden the dashboard views. By default a Postgres view runs with its
+--    OWNER's privileges (Supabase flags this as "SECURITY DEFINER"), letting the
+--    public anon key read these views via the REST API and bypass RLS on the
+--    underlying tables (e.g. dashboard_all_users exposes names, emails, ages and
+--    postcodes of minors). security_invoker = on makes each view run as the
+--    caller, so anon inherits its deny-all RLS while the backend's service_role
+--    key keeps full access. Loops over only the views that exist, so it is safe
+--    to run on any database. Requires Postgres 15+ (the Supabase default).
+DO $$
+DECLARE v text;
+BEGIN
+  FOREACH v IN ARRAY ARRAY[
+    'dashboard_survey_pre','dashboard_overview','dashboard_waiting',
+    'dashboard_stuck','dashboard_matched','dashboard_monthly_signups',
+    'dashboard_all_users'
+  ] LOOP
+    IF EXISTS (SELECT 1 FROM information_schema.views
+              WHERE table_schema = 'public' AND table_name = v) THEN
+      EXECUTE format('ALTER VIEW public.%I SET (security_invoker = on)', v);
+    END IF;
+  END LOOP;
+END $$;

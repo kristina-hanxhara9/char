@@ -4434,7 +4434,9 @@ class GuideMessage(BaseModel):
 class GuideAssistantRequest(BaseModel):
     question: str = Field(min_length=1, max_length=1000)
     # Prior turns for follow-ups ("summarise that", "what about the owner bit?").
-    history: list[GuideMessage] = Field(default_factory=list)
+    # Capped so a bot can't send a giant history to inflate the prompt (the
+    # answer function also only uses the last 6 turns).
+    history: list[GuideMessage] = Field(default_factory=list, max_length=20)
 
 
 class GuideAssistantResponse(BaseModel):
@@ -4957,7 +4959,7 @@ class GeocodeSchoolResponse(BaseModel):
 
 
 @app.get("/api/geocode-school", response_model=GeocodeSchoolResponse)
-@limiter.limit("30/minute")
+@limiter.limit("15/minute")
 def geocode_school_endpoint(request: Request, name: str):
     """
     Called by Step 1 of the wizard before advancing — pre-validates that we
@@ -4999,7 +5001,7 @@ def _run_precompute(postcode: str) -> None:
 
 
 @app.post("/api/precompute-search", status_code=202)
-@limiter.limit("20/minute")
+@limiter.limit("8/minute")
 def precompute_search_endpoint(
     req: PrecomputeSearchRequest, request: Request, background_tasks: BackgroundTasks
 ):
@@ -5351,7 +5353,7 @@ def return_exchange(req: ReturnExchangeRequest, request: Request):
 
 
 @app.post("/api/quick-start", response_model=OnboardResponse)
-@limiter.limit("10/minute")
+@limiter.limit("5/minute")
 def quick_start_endpoint(req: QuickStartRequest, request: Request):
     """Minimal onboarding for the 'ask for advice' / 'polish a visit report'
     routes — no postcode, no survey. Creates a user from name + age + email so
@@ -5375,7 +5377,7 @@ def quick_start_endpoint(req: QuickStartRequest, request: Request):
 
 
 @app.post("/api/onboard", response_model=OnboardResponse)
-@limiter.limit("10/minute")
+@limiter.limit("5/minute")
 def onboard_endpoint(req: OnboardRequest, request: Request):
     """Called by the pre-chat wizard. Creates or upserts user record."""
     _require_services()
@@ -5726,7 +5728,7 @@ def _guide_assistant_answer(question: str, history: list["GuideMessage"]) -> str
 
 
 @app.post("/api/guide-assistant", response_model=GuideAssistantResponse)
-@limiter.limit("20/minute")
+@limiter.limit("8/minute")
 def guide_assistant_endpoint(req: GuideAssistantRequest, request: Request):
     """Q&A over the help guide only — no user data, no auth needed."""
     return GuideAssistantResponse(answer=_guide_assistant_answer(req.question, req.history))

@@ -1,3 +1,5 @@
+import { userStorage } from "@/lib/storage";
+
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -221,9 +223,16 @@ export async function sendMessage(
   user_id: string,
   message: string
 ): Promise<string> {
+  // Attach the per-user token issued at onboarding (stored before any chat
+  // fires) so the backend can confirm this is a registered YB, not an
+  // anonymous bot. The chat endpoint rejects calls without it.
+  const token = userStorage.get()?.user_token || "";
   const res = await fetch(`${API_URL}/api/chat`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { "X-User-Token": token } : {}),
+    },
     body: JSON.stringify({ user_id, message }),
   });
   if (!res.ok) {

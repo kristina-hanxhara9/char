@@ -5470,9 +5470,24 @@ def survey_endpoint(req: SurveyRequest, request: Request, x_user_token: str = He
 
 @app.post("/api/chat", response_model=ChatResponse)
 @limiter.limit("30/minute")
-def chat_endpoint(req: ChatRequest, request: Request):
-    """Main chat endpoint for the frontend widget."""
+def chat_endpoint(
+    req: ChatRequest,
+    request: Request,
+    x_user_token: str = Header(default=""),
+    authorization: str = Header(default=""),
+):
+    """Main chat endpoint for the frontend widget.
+
+    Gated so only a registered young person (holding the signed token issued for
+    THIS user_id at onboarding) or a signed-in admin can spend an AI turn. This
+    stops anonymous bots/scrapers from hammering the Gemini-backed chat with
+    arbitrary user_ids and running up cost."""
     _require_services()
+    if not (
+        verify_admin_session(_bearer_token(authorization))
+        or verify_user_token(req.user_id, x_user_token)
+    ):
+        raise HTTPException(status_code=401, detail="Please sign up first to use the chat.")
     reply = chat(req.message, req.user_id)
     return ChatResponse(reply=reply)
 

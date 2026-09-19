@@ -32,7 +32,7 @@ export default function LandingPage() {
         <div className="max-w-5xl mx-auto w-full grid md:grid-cols-2 gap-10 md:gap-16 items-center">
           <div>
             <p className="text-yopey-primary font-semibold text-sm tracking-wide uppercase mb-3">
-              Befriender Programme · Ages 16+
+              Befriender Programme · Ages 13–24
             </p>
             <h1 className="text-4xl md:text-5xl lg:text-6xl font-extrabold leading-tight text-yopey-ink">
               Brighten someone&apos;s day —{" "}

@@ -2450,7 +2450,7 @@ POST_MATCH_RESPONSES = {
         "html": """
             <p>Two quick things you could do next:</p>
             <ul>
-              <li><strong>Bring a friend</strong> — forward <a href="https://www.yopeybefriender.org">yopeybefriender.org</a> to anyone 16+</li>
+              <li><strong>Bring a friend</strong> — forward <a href="https://www.yopeybefriender.org">yopeybefriender.org</a> to anyone aged 13–24</li>
               <li><strong>Share a moment</strong> on social — tag <strong>@yopeybefriender</strong>. Even a couple of lines about a resident helps inspire other young people.</li>
             </ul>
             <p>Thank you for showing up. Really.</p>
@@ -3439,7 +3439,7 @@ class OnboardRequest(BaseModel):
     """
     first_name: str = Field(min_length=1, max_length=50)
     surname: str = Field(min_length=1, max_length=50)
-    age: int = Field(ge=16, le=120, description="Must be 16 or older")
+    age: int = Field(ge=13, le=24, description="Must be aged 13–24")
     email: EmailStr
     phone: str = Field(min_length=5, max_length=20)
     home_postcode: str = Field(min_length=3, max_length=10)
@@ -3453,9 +3453,9 @@ class OnboardRequest(BaseModel):
 class QuickStartRequest(BaseModel):
     """Lightweight onboarding for the advice / visit-report routes, which don't
     need a postcode or the survey — just enough to run the chat and keep a
-    safeguarding contact on file: name, age (the 16+ gate) and email."""
+    safeguarding contact on file: name, age (the 13–24 gate) and email."""
     first_name: str = Field(min_length=1, max_length=50)
-    age: int = Field(ge=16, le=120, description="Must be 16 or older")
+    age: int = Field(ge=13, le=24, description="Must be aged 13–24")
     email: EmailStr
     utm_source: Optional[str] = None
 

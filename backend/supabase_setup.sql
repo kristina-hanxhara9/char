@@ -9,7 +9,7 @@ CREATE TABLE users (
     first_name TEXT NOT NULL,
     surname TEXT,
     email TEXT UNIQUE,
-    age INTEGER NOT NULL CHECK (age >= 16),
+    age INTEGER NOT NULL CHECK (age >= 13 AND age <= 24),
     postcode TEXT,                               -- resolved search postcode (= home_postcode or school_postcode)
     home_postcode TEXT,                          -- where they live
     school_postcode TEXT,                        -- where they study (NULL if NEET)

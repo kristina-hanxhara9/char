@@ -22,7 +22,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal, Optional, Union
+from typing import Any, Literal, Optional
 
 import requests
 from dotenv import load_dotenv
@@ -3301,7 +3301,7 @@ POST_MATCH_RESPONSES = {
         "html": """
             <p>Two quick things you could do next:</p>
             <ul>
-              <li><strong>Bring a friend</strong> — forward <a href="https://www.yopeybefriender.org">yopeybefriender.org</a> to anyone 16+</li>
+              <li><strong>Bring a friend</strong> — forward <a href="https://www.yopeybefriender.org">yopeybefriender.org</a> to anyone aged 16–24</li>
               <li><strong>Share a moment</strong> on social — tag <strong>@yopeybefriender</strong>. Even a couple of lines about a resident helps inspire other young people.</li>
             </ul>
             <p>Thank you for showing up. Really.</p>
@@ -4193,9 +4193,9 @@ def chat(user_message: str, user_id: str) -> str:
     # the teen-facing YOPEY safeguarding contact (used in the safeguarding flows).
     sys_prompt = (
         SYSTEM_PROMPT
-        + f"\n\n== YOPEY SAFEGUARDING CONTACT (a real person — use this when "
+        + "\n\n== YOPEY SAFEGUARDING CONTACT (a real person — use this when "
         + f"signposting) ==\n{YOPEY_SAFEGUARDING_CONTACT}\n"
-        + f"\n== KNOWN USER DETAILS ==\n"
+        + "\n== KNOWN USER DETAILS ==\n"
         # PRIVACY: the young person's identity (first name, surname, email) is
         # NEVER sent to the model. It only sees PLACEHOLDER tokens; the real
         # values live in Supabase and are substituted back into the reply before
@@ -4203,9 +4203,9 @@ def chat(user_message: str, user_id: str) -> str:
         # (the prompt keeps replies age-appropriate generically and forbids age
         # in emails). Postcode IS sent — the model must pass it to the search
         # tool, and it is coarse (area, never a full home address).
-        + f"First name: [FIRST_NAME]\n"
-        + (f"Surname: [SURNAME]\n" if user.get("surname") else "")
-        + (f"Email: [EMAIL]\n" if user.get("email") else "")
+        + "First name: [FIRST_NAME]\n"
+        + ("Surname: [SURNAME]\n" if user.get("surname") else "")
+        + ("Email: [EMAIL]\n" if user.get("email") else "")
         + "(The bracketed tokens above are PLACEHOLDERS. The real name, surname "
           "and email are kept private from you. Use each token exactly as written "
           "wherever you would write that detail — for example the email greeting "
@@ -4363,7 +4363,7 @@ class OnboardRequest(BaseModel):
     """
     first_name: str = Field(min_length=1, max_length=50)
     surname: str = Field(min_length=1, max_length=50)
-    age: int = Field(ge=16, le=120, description="Must be 16 or older")
+    age: int = Field(ge=16, le=24, description="Must be aged 16–24")
     email: EmailStr
     phone: str = Field(min_length=5, max_length=20)
     home_postcode: str = Field(min_length=3, max_length=10)
@@ -4377,9 +4377,9 @@ class OnboardRequest(BaseModel):
 class QuickStartRequest(BaseModel):
     """Lightweight onboarding for the advice / visit-report routes, which don't
     need a postcode or the survey — just enough to run the chat and keep a
-    safeguarding contact on file: name, age (the 16+ gate) and email."""
+    safeguarding contact on file: name, age (the 16–24 gate) and email."""
     first_name: str = Field(min_length=1, max_length=50)
-    age: int = Field(ge=16, le=120, description="Must be 16 or older")
+    age: int = Field(ge=16, le=24, description="Must be aged 16–24")
     email: EmailStr
     utm_source: Optional[str] = None
 

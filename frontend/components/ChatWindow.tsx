@@ -17,7 +17,7 @@ type Msg = { role: "user" | "assistant"; content: string };
 export default function ChatWindow() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  // intent set by returning-user buttons: 'search' | 'advice' | 'report'
+  // intent set by returning-user buttons: 'search' | 'advice' | 'report' | 'training'
   const intent = searchParams.get("intent");
   const [user, setUser] = useState<StoredUser | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -39,7 +39,7 @@ export default function ChatWindow() {
   // Run one of the three actions. Shared by the ?intent= deep links (set by the
   // landing-page buttons) and the in-chat chooser, so "after choosing, it
   // continues" is literally the same code path the landing page uses.
-  async function runIntent(which: "search" | "advice" | "report", u: StoredUser) {
+  async function runIntent(which: "search" | "advice" | "report" | "training", u: StoredUser) {
     setPhase("active");
 
     if (which === "report") {
@@ -57,6 +57,16 @@ export default function ChatWindow() {
         {
           role: "assistant",
           content: `Hi ${u.first_name}. What would you like advice on? For example: tips for your first visit, what to say to a resident, or trying another care home.`,
+        },
+      ]);
+      return;
+    }
+
+    if (which === "training") {
+      setMessages([
+        {
+          role: "assistant",
+          content: `Hi ${u.first_name}. Let's get you ready to befriend — I can teach you the dementia basics every YOPEY Befriender should know, in a few quick minutes. Want to start with the 5 key things to remember, or is there something specific you'd like to ask about visiting someone with dementia?`,
         },
       ]);
       return;
@@ -116,7 +126,7 @@ export default function ChatWindow() {
     if (!stored) {
       // No account yet. Advice/report skip the questionnaire, so send those to
       // the quick sign-in; anything else to the full wizard.
-      if (intent === "advice" || intent === "report") {
+      if (intent === "advice" || intent === "report" || intent === "training") {
         router.replace(`/start?intent=${intent}`);
       } else {
         router.replace("/onboard");
@@ -129,7 +139,7 @@ export default function ChatWindow() {
 
     (async () => {
       // Open the chosen route immediately using the stored user.
-      if (intent === "search" || intent === "advice" || intent === "report") {
+      if (intent === "search" || intent === "advice" || intent === "report" || intent === "training") {
         await runIntent(intent, stored);
       } else {
         setMessages([
@@ -302,6 +312,13 @@ export default function ChatWindow() {
                   Polish a visit report
                 </button>
               </div>
+              <button
+                type="button"
+                onClick={() => runIntent("training", user)}
+                className="inline-flex items-center justify-center px-5 py-4 rounded-2xl border-2 border-yopey-primary/30 text-yopey-primary font-semibold hover:bg-yopey-primary/10 transition min-h-[52px]"
+              >
+                Dementia training
+              </button>
             </div>
           )}
         </div>
@@ -334,6 +351,14 @@ export default function ChatWindow() {
                 className="shrink-0 whitespace-nowrap px-4 min-h-[44px] rounded-full border-2 border-yopey-primary/30 text-yopey-primary text-sm font-semibold hover:bg-yopey-primary/10 transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Polish a visit report
+              </button>
+              <button
+                type="button"
+                disabled={pending}
+                onClick={() => send("Can you teach me the dementia basics?")}
+                className="shrink-0 whitespace-nowrap px-3 py-2 rounded-full border-2 border-yopey-primary/30 text-yopey-primary text-sm font-semibold hover:bg-yopey-primary/10 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Dementia training
               </button>
             </div>
           )}

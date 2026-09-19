@@ -73,6 +73,12 @@ export default function ReturningUserCta() {
               Polish a visit report
             </Link>
           </div>
+          <Link
+            href="/chat?intent=training"
+            className="inline-flex items-center justify-center px-5 py-4 rounded-2xl border-2 border-yopey-primary/30 text-yopey-primary font-semibold hover:bg-yopey-primary/10 transition min-h-[52px]"
+          >
+            Dementia training
+          </Link>
         </div>
         <button
           type="button"
@@ -112,6 +118,12 @@ export default function ReturningUserCta() {
             Polish a visit report
           </Link>
         </div>
+        <Link
+          href="/start?intent=training"
+          className="inline-flex items-center justify-center px-5 py-4 rounded-2xl border-2 border-yopey-primary/30 text-yopey-primary font-semibold hover:bg-yopey-primary/10 transition min-h-[52px]"
+        >
+          Dementia training
+        </Link>
       </div>
 
       <p className="mt-6 text-sm text-gray-500">

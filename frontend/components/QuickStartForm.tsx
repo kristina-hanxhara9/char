@@ -10,13 +10,15 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 /**
  * Minimal sign-in for the "ask for advice" / "polish a visit report" routes.
  * These don't need a postcode or the dementia survey, so we skip the full
- * onboarding wizard and collect just name + age (16+ gate) + email + consent,
+ * onboarding wizard and collect just name + age (16–24 gate) + email + consent,
  * then drop the user straight into the chat with the matching intent.
  */
 export default function QuickStartForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const intent = searchParams.get("intent") === "report" ? "report" : "advice";
+  const rawIntent = searchParams.get("intent");
+  const intent =
+    rawIntent === "report" ? "report" : rawIntent === "training" ? "training" : "advice";
   const utmSource = searchParams.get("utm_source") || undefined;
 
   const [firstName, setFirstName] = useState("");
@@ -33,14 +35,18 @@ export default function QuickStartForm() {
   }, []);
 
   const heading =
-    intent === "report" ? "Let's polish your visit report" : "Let's get you some advice";
+    intent === "report"
+      ? "Let's polish your visit report"
+      : intent === "training"
+      ? "Let's get you some dementia training"
+      : "Let's get you some advice";
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const age = parseInt(ageStr, 10);
     if (!firstName.trim()) return setError("Please enter your first name.");
-    if (!Number.isFinite(age) || age < 16)
-      return setError("You need to be 16 or over to use YOPEY Befriender.");
+    if (!Number.isFinite(age) || age < 16 || age > 24)
+      return setError("You need to be aged 16–24 to use YOPEY Befriender.");
     if (!EMAIL_RE.test(email.trim())) return setError("Please enter a valid email.");
     if (!consent) return setError("Please tick the consent box to continue.");
 
@@ -103,7 +109,7 @@ export default function QuickStartForm() {
             type="number"
             inputMode="numeric"
             min={16}
-            max={120}
+            max={24}
             value={ageStr}
             onChange={(e) => setAgeStr(e.target.value)}
             placeholder="17"
@@ -138,7 +144,7 @@ export default function QuickStartForm() {
             className="mt-1 w-5 h-5 accent-yopey-primary cursor-pointer"
           />
           <span className="text-sm text-gray-700 leading-relaxed">
-            I confirm I am <strong>16 or over</strong>, and I&apos;m happy for YOPEY to
+            I confirm I am <strong>aged 16–24</strong>, and I&apos;m happy for YOPEY to
             store my name, email and my chat with the bot so it can help me. I&apos;ve
             read the{" "}
             <a
@@ -165,7 +171,13 @@ export default function QuickStartForm() {
         disabled={submitting}
         className="w-full px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-md hover:opacity-90 transition active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed min-h-[52px]"
       >
-        {submitting ? "Setting up..." : intent === "report" ? "Start my report →" : "Get advice →"}
+        {submitting
+          ? "Setting up..."
+          : intent === "report"
+          ? "Start my report →"
+          : intent === "training"
+          ? "Start training →"
+          : "Get advice →"}
       </button>
 
       <p className="text-xs text-gray-500 text-center">

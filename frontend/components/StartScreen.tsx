@@ -16,7 +16,7 @@ import QuickStartForm from "@/components/QuickStartForm";
 export default function StartScreen() {
   const intent = useSearchParams().get("intent");
 
-  if (intent === "advice" || intent === "report") {
+  if (intent === "advice" || intent === "report" || intent === "training") {
     return <QuickStartForm />;
   }
 
@@ -44,10 +44,16 @@ export default function StartScreen() {
         >
           Polish a visit report
         </Link>
+        <Link
+          href="/start?intent=training"
+          className="inline-flex items-center justify-center px-5 py-4 rounded-2xl border-2 border-yopey-primary/30 text-yopey-primary font-semibold hover:bg-yopey-primary/10 transition min-h-[52px]"
+        >
+          Dementia training
+        </Link>
       </div>
 
       <p className="mt-5 text-xs text-gray-500 text-center">
-        Only finding a care home needs a few quick questions. Free · UK · 16+
+        Only finding a care home needs a few quick questions. Free · UK · 16–24
       </p>
     </div>
   );

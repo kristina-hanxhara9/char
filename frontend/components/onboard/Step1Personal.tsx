@@ -56,7 +56,7 @@ export default function Step1Personal({
 
   const ageNum = parseInt(data.ageStr, 10);
   const ageInvalid =
-    data.ageStr !== "" && (Number.isNaN(ageNum) || ageNum < 16 || ageNum > 120);
+    data.ageStr !== "" && (Number.isNaN(ageNum) || ageNum < 16 || ageNum > 24);
   const emailInvalid = data.email !== "" && !EMAIL_RE.test(data.email);
   const phoneInvalid = data.phone !== "" && !PHONE_RE.test(data.phone);
   const homePostcodeInvalid =
@@ -67,7 +67,7 @@ export default function Step1Personal({
     data.surname.trim().length > 0 &&
     !Number.isNaN(ageNum) &&
     ageNum >= 16 &&
-    ageNum <= 120 &&
+    ageNum <= 24 &&
     data.email.trim() !== "" &&
     !emailInvalid &&
     data.phone.trim() !== "" &&
@@ -165,7 +165,7 @@ export default function Step1Personal({
             type="number"
             inputMode="numeric"
             min={16}
-            max={120}
+            max={24}
             required
             value={data.ageStr}
             onChange={(e) => set("ageStr", e.target.value)}
@@ -177,9 +177,9 @@ export default function Step1Personal({
             }`}
           />
           {ageInvalid ? (
-            <p className="mt-1 text-sm text-red-600">Must be 16+.</p>
+            <p className="mt-1 text-sm text-red-600">Must be aged 16–24.</p>
           ) : (
-            <p className="mt-1 text-xs text-gray-500">For 16 and over</p>
+            <p className="mt-1 text-xs text-gray-500">For ages 16–24</p>
           )}
         </div>
         <div>

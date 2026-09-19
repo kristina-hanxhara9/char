@@ -32,8 +32,8 @@ export default function Step3Consent({ submitting, error, onSubmit, onBack }: Pr
             className="mt-1 w-5 h-5 accent-yopey-primary cursor-pointer"
           />
           <span className="text-sm text-gray-700 leading-relaxed">
-            I confirm I am <strong>16 or over</strong>. (YOPEY Befriender is for
-            young people aged 16–21.)
+            I confirm I am <strong>aged 16–24</strong>. (YOPEY Befriender is for
+            young people aged 16–24.)
           </span>
         </label>
       </div>

@@ -1,6 +1,6 @@
 // Tiny localStorage helpers — keeps the chat session alive across reloads.
 const USER_KEY = "yopey_user";
-const PASS_KEY = "yopey_dash_pass";
+const TOKEN_KEY = "yopey_dash_token";
 
 export type StoredUser = {
   user_id: string;
@@ -32,17 +32,19 @@ export const userStorage = {
   },
 };
 
-export const dashPasswordStorage = {
+// Stores the admin session token (HMAC-signed, 7-day expiry, revocable
+// server-side). Replaces the old cleartext shared-password store.
+export const dashTokenStorage = {
   get(): string | null {
     if (typeof window === "undefined") return null;
-    return localStorage.getItem(PASS_KEY);
+    return localStorage.getItem(TOKEN_KEY);
   },
-  set(p: string) {
+  set(t: string) {
     if (typeof window === "undefined") return;
-    localStorage.setItem(PASS_KEY, p);
+    localStorage.setItem(TOKEN_KEY, t);
   },
   clear() {
     if (typeof window === "undefined") return;
-    localStorage.removeItem(PASS_KEY);
+    localStorage.removeItem(TOKEN_KEY);
   },
 };

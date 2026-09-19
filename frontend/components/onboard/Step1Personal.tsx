@@ -349,11 +349,16 @@ export default function Step1Personal({
         </div>
       )}
 
+      {/* Deliberately NOT disabled: a disabled button fires no onClick, so a
+          user with a missing/invalid field (easy to miss on mobile) would tap a
+          dead button and see no reason why. Keep it live so the amber notice
+          above shows. */}
       <button
         type="button"
         onClick={handleNext}
-        disabled={!canNext}
-        className="w-full px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-md hover:opacity-90 transition active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed min-h-[52px]"
+        className={`w-full px-6 py-4 rounded-2xl bg-yopey-primary text-white font-semibold shadow-md hover:opacity-90 transition active:scale-[0.98] min-h-[52px] ${
+          canNext ? "" : "opacity-60"
+        }`}
       >
         Continue →
       </button>

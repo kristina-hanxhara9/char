@@ -15,6 +15,7 @@ import json
 import math
 import os
 import re
+import secrets
 import socket
 import sys
 import threading
@@ -62,8 +63,21 @@ CQC_PARTNER_CODE = os.environ.get("CQC_PARTNER_CODE", "").strip()
 # Subscription key from CQC API portal (apply at api-portal.service.cqc.org.uk).
 # Without this, CQC returns 403 — we fall back to Gemini web search.
 CQC_SUBSCRIPTION_KEY = os.environ.get("CQC_SUBSCRIPTION_KEY", "").strip()
-DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "changeme")
-EMAIL_TOKEN_SECRET = os.environ.get("EMAIL_TOKEN_SECRET") or DASHBOARD_PASSWORD
+# OpenRouteService key (free tier — sign up at openrouteservice.org). When set,
+# care-home distances become real WALKING distance + time (foot-walking matrix)
+# instead of straight-line "as the crow flies". Unset → honest straight-line
+# fallback, so the app works either way.
+ORS_API_KEY = os.environ.get("ORS_API_KEY", "").strip()
+# DASHBOARD_PASSWORD is NO LONGER used to log into the dashboard (that now needs a
+# real per-user @yopey.org account). Kept only as an optional operator secret for
+# /api/test-reminder. Do not rely on it for auth.
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "").strip()
+# Signs admin session tokens + email-click tokens. MUST be set in production
+# (render.yaml declares it). Falls back to DASHBOARD_PASSWORD only so old email
+# links keep validating during migration.
+EMAIL_TOKEN_SECRET = os.environ.get("EMAIL_TOKEN_SECRET") or DASHBOARD_PASSWORD or "dev-insecure-secret"
+# Only emails on this domain may register/log into the coordinator dashboard.
+ADMIN_EMAIL_DOMAIN = os.environ.get("ADMIN_EMAIL_DOMAIN", "yopey.org").strip().lower()
 # Where safeguarding escalations are emailed. Should be YOPEY's named
 # safeguarding lead. Falls back to EMAIL_FROM's inbox if unset (better than
 # dropping the alert, but the lead should be set explicitly).
@@ -124,6 +138,43 @@ if not (GEMINI_KEY and SUPABASE_URL and SUPABASE_KEY):
 # web-search helpers (grounding only) stay on separate models and configs.
 BRAIN_MODEL = "gemini-3.5-flash"        # agentic tool use + safeguarding judgement
 SEARCH_MODEL = "gemini-3.1-flash-lite"  # cheap Google-Search-grounded lookups
+
+# Allowlist for the dynamic "fresh advice" search (search_dementia_advice). The
+# grounded model can cite anything on the open web, so we drop every source whose
+# host isn't one of these authoritative UK dementia/care bodies BEFORE the advice
+# reaches the chat brain — the guarantee behind calling these "trusted sources".
+TRUSTED_ADVICE_DOMAINS = (
+    "nhs.uk", "alzheimers.org.uk", "dementiauk.org", "scie.org.uk",
+    "ageuk.org.uk", "skillsforcare.org.uk", "cqc.org.uk", "gov.uk",
+    "dementiafriends.org.uk", "alzheimersresearchuk.org", "belightcare.com",
+)
+# Social platforms carry both trusted and untrusted voices, so a bare youtube.com
+# / instagram.com host is NOT enough — the URL must also name one of the specific
+# educators the curated scripts already endorse (Adria Thompson / BeLight,
+# Bailey Greetham-Clark). Matched as lowercase substrings of the full URL.
+TRUSTED_SOCIAL_HOSTS = ("youtube.com", "youtu.be", "instagram.com")
+TRUSTED_SOCIAL_HANDLES = (
+    "belightcare", "adriathompson", "adria-thompson",
+    "bailey_greetham", "baileygreetham", "begreatfitness",
+)
+
+
+def _is_trusted_source(url: Optional[str]) -> bool:
+    """True only when `url` is on an allowlisted org domain, or is a social link
+    that names one of the vetted educators. Domain match is suffix-based so
+    subdomains (www.nhs.uk, learning.alzheimers.org.uk) pass but look-alikes
+    (evilnhs.uk) do not."""
+    if not url:
+        return False
+    u = url.strip().lower()
+    host = (urlparse(u if "://" in u else "http://" + u).hostname or "").strip(".")
+    if not host:
+        return False
+    if any(host == d or host.endswith("." + d) for d in TRUSTED_ADVICE_DOMAINS):
+        return True
+    if any(host == s or host.endswith("." + s) for s in TRUSTED_SOCIAL_HOSTS):
+        return any(handle in u for handle in TRUSTED_SOCIAL_HANDLES)
+    return False
 
 # 60s cap: google-genai sets no default timeout, and /api/chat is synchronous
 # — a hung call must not pin a worker.
@@ -293,11 +344,19 @@ def _geocode_school_via_nominatim(school_name: str) -> Optional[dict]:
         if pc_data.get("status") != 200 or not pc_data.get("result"):
             return None
         result = pc_data["result"][0]
+        # Keep Nominatim's PRECISE school coordinates as the primary lat/lng —
+        # distances measured from the actual school building, not the postcode
+        # centroid (which can sit hundreds of metres away and inflate the
+        # shortest journey). The postcode centroid is retained separately for
+        # reference / anything that needs the canonical postcode point.
         return {
             "postcode": result["postcode"],
-            "latitude": result["latitude"],
-            "longitude": result["longitude"],
+            "latitude": lat,
+            "longitude": lon,
+            "centroid_latitude": result["latitude"],
+            "centroid_longitude": result["longitude"],
             "admin_district": result.get("admin_district"),
+            "coord_precision": "exact",
         }
     except Exception as e:
         print(f"[geocode] postcodes.io reverse failed: {e}")
@@ -339,11 +398,16 @@ def _geocode_school_via_web_search(school_name: str) -> Optional[dict]:
     if "error" in validated:
         print(f"[geocode] Web search returned invalid postcode for {redact_school_name(school_name)}")
         return None
+    # Only the postcode centroid is available on this path (the model gives us a
+    # postcode, not a pinpoint), so precise == centroid here.
     return {
         "postcode": candidate,
         "latitude": validated["latitude"],
         "longitude": validated["longitude"],
+        "centroid_latitude": validated["latitude"],
+        "centroid_longitude": validated["longitude"],
         "admin_district": validated.get("admin_district"),
+        "coord_precision": "centroid",
     }
 
 
@@ -352,32 +416,52 @@ def _name_key(school_name: str) -> str:
     return re.sub(r"\s+", " ", school_name.strip().lower())
 
 
-def _check_school_cache(school_name: str) -> Optional[str]:
-    """Return a cached postcode for this school, or None."""
+def _check_school_cache(school_name: str) -> Optional[dict]:
+    """Return a cached {postcode, latitude, longitude} for this school, or None.
+    latitude/longitude are the PRECISE school coordinates when we resolved the
+    school via Nominatim (older rows may lack them → None)."""
     if not supabase:
         return None
     try:
         res = (
             supabase.table("school_postcodes")
-            .select("postcode")
+            .select("postcode, latitude, longitude")
             .eq("name_key", _name_key(school_name))
             .limit(1)
             .execute()
         )
-        return res.data[0]["postcode"] if res.data else None
+        if not res.data:
+            return None
+        row = res.data[0]
+        return {
+            "postcode": row["postcode"],
+            "latitude": row.get("latitude"),
+            "longitude": row.get("longitude"),
+        }
     except Exception:
         return None
 
 
-def _save_school_cache(school_name: str, postcode: str, source: str) -> None:
+def _save_school_cache(
+    school_name: str,
+    postcode: str,
+    source: str,
+    latitude: Optional[float] = None,
+    longitude: Optional[float] = None,
+) -> None:
     if not supabase:
         return
     try:
-        supabase.table("school_postcodes").upsert({
+        row: dict[str, Any] = {
             "name_key": _name_key(school_name),
             "postcode": postcode,
             "source": source,
-        }).execute()
+        }
+        # Only persist coords when they're the school's precise point (Nominatim).
+        if latitude is not None and longitude is not None:
+            row["latitude"] = latitude
+            row["longitude"] = longitude
+        supabase.table("school_postcodes").upsert(row).execute()
     except Exception as e:
         print(f"[school-cache] upsert failed: {e}")
 
@@ -394,20 +478,29 @@ def _geocode_school(school_name: str) -> Optional[dict]:
 
     # Cache: same school typed by the same teen (or a school we've seen
     # for any teen) returns its prior resolution instantly.
-    cached_postcode = _check_school_cache(school_name)
-    if cached_postcode:
-        validated = postcode_to_latlng(cached_postcode)
+    cached = _check_school_cache(school_name)
+    if cached:
+        validated = postcode_to_latlng(cached["postcode"])
         if "error" not in validated:
+            # Prefer the school's PRECISE coords if we stored them; else fall
+            # back to the postcode centroid from postcodes.io.
+            has_precise = cached.get("latitude") is not None and cached.get("longitude") is not None
             return {
-                "postcode": cached_postcode,
-                "latitude": validated["latitude"],
-                "longitude": validated["longitude"],
+                "postcode": cached["postcode"],
+                "latitude": cached["latitude"] if has_precise else validated["latitude"],
+                "longitude": cached["longitude"] if has_precise else validated["longitude"],
+                "centroid_latitude": validated["latitude"],
+                "centroid_longitude": validated["longitude"],
                 "admin_district": validated.get("admin_district"),
+                "coord_precision": "exact" if has_precise else "centroid",
             }
 
     nominatim = _geocode_school_via_nominatim(school_name)
     if nominatim:
-        _save_school_cache(school_name, nominatim["postcode"], "nominatim")
+        _save_school_cache(
+            school_name, nominatim["postcode"], "nominatim",
+            latitude=nominatim.get("latitude"), longitude=nominatim.get("longitude"),
+        )
         return nominatim
 
     print(f"[geocode] Nominatim found nothing for '{redact_school_name(school_name)}', trying web search")
@@ -431,62 +524,194 @@ def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float
     return R * 2 * math.asin(math.sqrt(a))
 
 
-def _fetch_cqc_care_homes(location: dict) -> list | dict:
-    """All registered care homes in the postcode's local authority, each with
-    a computed distance_miles, sorted nearest-first. Fetched ONCE so the
-    dispatcher's radius widening is an in-memory filter instead of repeated
-    API sweeps (serial details for a dense borough took minutes). Returns an
-    {"error": ...} dict on auth/transport failure so the caller can fall back
-    to web search — with a loud log if the subscription key is rejected."""
+def _offset_latlon(lat: float, lon: float, bearing_deg: float, dist_miles: float) -> tuple[float, float]:
+    """Approximate lat/lon a given distance and compass bearing from a point
+    (equirectangular; fine at these scales for picking sample points)."""
+    dlat = dist_miles / 69.0
+    dlon = dist_miles / (69.0 * max(math.cos(math.radians(lat)), 1e-6))
+    b = math.radians(bearing_deg)
+    return lat + dlat * math.cos(b), lon + dlon * math.sin(b)
+
+
+def _admin_districts_within_radius(lat: float, lon: float, radius_miles: float) -> list[str]:
+    """Distinct postcodes.io admin_districts covering a disc of ~radius_miles
+    around (lat, lon), so care homes just over a council boundary (physically
+    the closest to a school) aren't excluded by a single-authority filter.
+
+    postcodes.io's single reverse-geocode `radius` param maxes at 2000 m — far
+    short of a 10-mile disc — so we sample a ring/grid of points and resolve
+    them in ONE bulk reverse-geocode POST (up to 100 lookups per request). On
+    any failure we degrade to just the origin's own district: never worse than
+    the previous single-authority behaviour."""
+    # Origin + 8 compass bearings at a few radii out to the edge of the disc.
+    points: list[tuple[float, float]] = [(lat, lon)]
+    ring_dists = sorted({3.0, 6.0, float(radius_miles)})
+    for d in ring_dists:
+        if d <= 0:
+            continue
+        for bearing in range(0, 360, 45):
+            points.append(_offset_latlon(lat, lon, bearing, d))
+
+    districts: list[str] = []
+    try:
+        resp = requests.post(
+            "https://api.postcodes.io/postcodes",
+            json={
+                "geolocations": [
+                    {"longitude": p_lon, "latitude": p_lat, "radius": 2000, "limit": 1}
+                    for (p_lat, p_lon) in points
+                ]
+            },
+            timeout=10,
+        )
+        data = resp.json()
+        if data.get("status") == 200:
+            for entry in data.get("result", []) or []:
+                matches = (entry or {}).get("result") or []
+                if matches:
+                    ad = matches[0].get("admin_district")
+                    if ad and ad not in districts:
+                        districts.append(ad)
+    except Exception as e:
+        print(f"[geocode] neighbouring-authority discovery failed: {e}")
+
+    return districts if districts else []
+
+
+def _walking_matrix(
+    origin: tuple[float, float], destinations: list[tuple[float, float]]
+) -> Optional[list[tuple[float, int]]]:
+    """OpenRouteService foot-walking matrix: one origin × N destinations in a
+    single call. Returns [(walking_miles, walking_minutes), ...] aligned to
+    `destinations`, or None on any failure / missing key so the caller falls
+    back to straight-line distance. Gated on ORS_API_KEY."""
+    if not ORS_API_KEY or not destinations:
+        return None
+    # ORS expects [lon, lat]; source index 0 is the origin.
+    locations = [[origin[1], origin[0]]] + [[d[1], d[0]] for d in destinations]
+    try:
+        r = requests.post(
+            "https://api.openrouteservice.org/v2/matrix/foot-walking",
+            headers={"Authorization": ORS_API_KEY, "Content-Type": "application/json"},
+            json={
+                "locations": locations,
+                "sources": [0],
+                "destinations": list(range(1, len(locations))),
+                "metrics": ["distance", "duration"],
+                "units": "mi",
+            },
+            timeout=12,
+        )
+        if r.status_code != 200:
+            print(f"[ors] matrix failed ({r.status_code}) — falling back to straight-line")
+            return None
+        d = r.json()
+        dist_row = (d.get("distances") or [[]])[0]
+        dur_row = (d.get("durations") or [[]])[0]
+        if not dist_row or len(dist_row) != len(destinations):
+            return None
+        out: list[tuple[float, int]] = []
+        for mi, sec in zip(dist_row, dur_row):
+            # ORS returns null for an unroutable pair — skip walking for it.
+            if mi is None:
+                return None
+            minutes = round(sec / 60) if sec is not None else 0
+            out.append((round(mi, 1), minutes))
+        return out
+    except Exception as e:
+        print(f"[ors] error: {e} — falling back to straight-line")
+        return None
+
+
+# Safety ceiling on how many care-home detail records we fetch per search.
+# The CQC list endpoint returns IDs with NO coordinates, so we can't pre-filter
+# by distance — every candidate must be detailed to know its distance. 800
+# fully covers a school's own authority plus its neighbours within 10 miles
+# while staying bounded (was an unsafe arbitrary 150 that silently dropped the
+# nearest home when it happened to sit past index 150 in CQC's ordering).
+MAX_CANDIDATE_IDS = 800
+
+
+def _fetch_cqc_care_homes(location: dict, max_radius: float = 10) -> list | dict:
+    """All registered care homes in the postcode's local authority AND every
+    neighbouring authority within `max_radius` miles, each with a computed
+    distance_miles, sorted nearest-first. Fetched ONCE so the dispatcher's
+    radius widening is an in-memory filter instead of repeated API sweeps.
+    Returns an {"error": ...} dict on auth/transport failure so the caller can
+    fall back to web search — with a loud log if the subscription key is
+    rejected."""
     user_lat = location["latitude"]
     user_lng = location["longitude"]
-    local_authority = location["admin_district"]
+
+    # A care home just over a council boundary can be the CLOSEST to a school,
+    # yet a single-authority filter would exclude it (the St Peter's House /
+    # Bury St Edmunds case). Query the school's own authority plus every
+    # authority whose area falls within the search disc. Always include the
+    # origin's own district so a discovery failure is never worse than before.
+    districts: list[str] = []
+    origin_district = location.get("admin_district")
+    if origin_district:
+        districts.append(origin_district)
+    for ad in _admin_districts_within_radius(user_lat, user_lng, max_radius):
+        if ad not in districts:
+            districts.append(ad)
+    if not districts:
+        return {"error": "No local authority for this location", "results": []}
 
     headers = {"Ocp-Apim-Subscription-Key": CQC_SUBSCRIPTION_KEY}
     common_params: dict[str, Any] = (
         {"partnerCode": CQC_PARTNER_CODE} if CQC_PARTNER_CODE else {}
     )
 
-    # Filter by localAuthority first — drastically reduces the result set vs
-    # paginating through all of England. List pages are cheap (ids only here);
-    # the expensive per-home details are fetched in parallel below.
+    # Collect candidate IDs across every relevant authority, deduped by
+    # locationId. List pages are cheap (ids only); the expensive per-home
+    # details are fetched in parallel below.
     loc_ids: list[str] = []
     seen_ids: set[str] = set()
-    page = 1
-    while page <= 6:
-        try:
-            resp = requests.get(
-                "https://api.service.cqc.org.uk/public/v1/locations",
-                params={
-                    **common_params,
-                    "careHome": "Y",
-                    "page": page,
-                    "perPage": 50,
-                    "localAuthority": local_authority,
-                },
-                headers=headers,
-                timeout=20,
-            )
-            if resp.status_code in (401, 403):
-                print(
-                    f"[cqc] subscription key rejected ({resp.status_code}) — "
-                    "check CQC_SUBSCRIPTION_KEY in Render"
-                )
-                return {"error": f"CQC auth failed ({resp.status_code})", "results": []}
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            return {"error": f"CQC API error: {e}", "results": []}
-
-        locations = data.get("locations", [])
-        if not locations:
+    for local_authority in districts:
+        if len(seen_ids) >= MAX_CANDIDATE_IDS:
             break
-        for loc in locations:
-            loc_id = loc.get("locationId")
-            if loc_id and loc_id not in seen_ids:
-                seen_ids.add(loc_id)
-                loc_ids.append(loc_id)
-        page += 1
+        page = 1
+        while len(seen_ids) < MAX_CANDIDATE_IDS:
+            try:
+                resp = requests.get(
+                    "https://api.service.cqc.org.uk/public/v1/locations",
+                    params={
+                        **common_params,
+                        "careHome": "Y",
+                        "page": page,
+                        "perPage": 50,
+                        "localAuthority": local_authority,
+                    },
+                    headers=headers,
+                    timeout=20,
+                )
+                if resp.status_code in (401, 403):
+                    print(
+                        f"[cqc] subscription key rejected ({resp.status_code}) — "
+                        "check CQC_SUBSCRIPTION_KEY in Render"
+                    )
+                    return {"error": f"CQC auth failed ({resp.status_code})", "results": []}
+                resp.raise_for_status()
+                data = resp.json()
+            except Exception as e:
+                # One bad authority shouldn't blank the whole result — the
+                # school's own district may still return fine. Skip and move on.
+                print(f"[cqc] list error for '{local_authority}': {e}")
+                break
+
+            locations = data.get("locations", [])
+            if not locations:
+                break
+            for loc in locations:
+                loc_id = loc.get("locationId")
+                if loc_id and loc_id not in seen_ids:
+                    seen_ids.add(loc_id)
+                    loc_ids.append(loc_id)
+            page += 1
+
+    if not loc_ids:
+        return {"error": "CQC returned no care homes for these authorities", "results": []}
 
     def _detail(loc_id: str) -> Optional[dict]:
         try:
@@ -501,10 +726,25 @@ def _fetch_cqc_care_homes(location: dict) -> list | dict:
             return None
 
     care_homes: list[dict] = []
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        for detail in executor.map(_detail, loc_ids[:150]):
+    # Detail EVERY candidate (no arbitrary slice) so the true nearest is never
+    # dropped before its distance is known. max_workers raised to keep the
+    # wider fetch's wall-clock reasonable.
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        for detail in executor.map(_detail, loc_ids):
             if not detail:
                 continue
+
+            # Skip homes that are no longer operational. CQC keeps DEREGISTERED
+            # (archived) locations in the register, and their /location/{id} page
+            # shows "Archived" — a closed home is worse than none (the user's
+            # CW10 0SR test surfaced two shut homes, and clicking through hit an
+            # archived profile). Only surface currently-registered care homes.
+            reg_status = (detail.get("registrationStatus") or "").strip().lower()
+            if reg_status and reg_status != "registered":
+                continue
+            if detail.get("deregistrationDate"):
+                continue
+
             lat = detail.get("onspdLatitude")
             lng = detail.get("onspdLongitude")
             if not (lat and lng):
@@ -563,7 +803,24 @@ def _fetch_cqc_care_homes(location: dict) -> list | dict:
                 "phone": detail.get("mainPhoneNumber", "Not listed"),
                 "website": detail.get("website") or None,
                 "manager": manager_name or "the Manager (not listed)",
+                # Provenance for the manager name: it came from the CQC register's
+                # "Registered Manager" field, which can lag reality. A live
+                # carehome.co.uk cross-check (_enrich_with_managers) may override
+                # this later and flip manager_source to "carehome_co_uk".
+                "manager_source": "cqc_register" if manager_name else None,
+                "manager_checked_against_carehome": False,
+                "manager_note": (
+                    f"Manager per the CQC register (last inspection "
+                    f"{last_inspection or 'date unknown'}) — may be out of date; "
+                    f"verify on carehome.co.uk"
+                ) if manager_name else None,
                 "distance_miles": round(distance, 1),
+                # Straight-line for now; the dispatcher upgrades the shortlist to
+                # real WALKING distance via ORS when ORS_API_KEY is set. Precise
+                # home coords kept so the walking matrix can be built.
+                "distance_source": "straight_line",
+                "_lat": lat,
+                "_lng": lng,
                 "cqc_rating": detail.get("currentRatings", {})
                     .get("overall", {})
                     .get("rating", "Not yet rated"),
@@ -649,11 +906,24 @@ def _parse_json_response(text: str) -> Optional[dict]:
 # required — the setdefault normalisation below fills the rest, matching how
 # gaps were handled before.
 def _carehome_directory_url(name: str, postcode: str = "") -> str:
-    """Google search restricted to carehome.co.uk for this home's profile.
-    Includes the postcode: same-named homes exist in different towns, and
-    name-only queries surface the wrong one (live-testing feedback)."""
-    query = f'site:carehome.co.uk "{name}" {postcode}'.strip()
-    return "https://www.google.com/search?q=" + requests.utils.quote(query)
+    """Link to carehome.co.uk's OWN postcode search results for this home's area.
+
+    A Google `site:carehome.co.uk "Name" postcode` query returned "did not match
+    any documents" for essentially every home (the quoted name + location term
+    over-constrains the site: operator). carehome.co.uk's native search page is
+    reliable instead: /care_search_results.cfm/searchpostcode/<OUTWARD> lists the
+    homes in that outward area, and the young person clicks theirs. We do NOT add
+    /searchchtype/carehomeonly — that would hide nursing homes."""
+    outward = _outward_code(postcode)
+    if outward:
+        return (
+            "https://www.carehome.co.uk/care_search_results.cfm/searchpostcode/"
+            + requests.utils.quote(outward.replace(" ", ""))
+        )
+    # No postcode to search by — fall back to a plain Google search by name.
+    return "https://www.google.com/search?q=" + requests.utils.quote(
+        f'carehome.co.uk "{name}"'.strip()
+    )
 
 
 def _cqc_search_url(name: str, postcode: str = "") -> str:
@@ -661,8 +931,10 @@ def _cqc_search_url(name: str, postcode: str = "") -> str:
     young person (or the coordinator) can read the REAL, current rating at
     source. Used for web-sourced homes, whose ratings we must never assert
     ourselves — a hallucinated "Outstanding" on a home we point a child toward
-    is exactly the error this guards against."""
-    query = f'site:cqc.org.uk "{name}" {postcode}'.strip()
+    is exactly the error this guards against. Outward code only, same reason as
+    the carehome.co.uk link above (full unit code returns no results)."""
+    outward = _outward_code(postcode) or ""
+    query = f'site:cqc.org.uk "{name}" {outward}'.strip()
     return "https://www.google.com/search?q=" + requests.utils.quote(query)
 
 
@@ -842,19 +1114,39 @@ def _normalize_postcode(postcode: str) -> str:
     return postcode.strip().upper().replace(" ", "")
 
 
+def _origin_key(origin_lat: Optional[float], origin_lng: Optional[float]) -> str:
+    """Cache discriminator for the distance ORIGIN. Distances now depend on
+    whether we measured from a precise school point or the postcode centroid,
+    so two callers with the same postcode but different origins must not share a
+    cached result. ~110 m precision is plenty to bucket identical origins."""
+    if origin_lat is None or origin_lng is None:
+        return "centroid"
+    return f"{origin_lat:.3f},{origin_lng:.3f}"
+
+
 # Bump when the cached payload shape/links change — old-format rows are
 # skipped and refreshed on next search. v2: postcoded directory URLs.
 # v3: CQC-primary cutover (forces web-era caches to refresh via CQC).
 # v4: CQC-rating provenance — web-fallback homes no longer carry a stated
 # rating (old v3 web rows still hold a model-asserted one), so refresh them.
-SEARCH_CACHE_VERSION = 4
+# v5: multi-authority CQC discovery (wider result set), walking distances +
+# time, and carehome.co.uk manager cross-check — all change the payload.
+# v6: filter out deregistered/archived CQC homes + reject placeholder emails —
+# old cached rows may still list closed homes or fake addresses, so refresh.
+SEARCH_CACHE_VERSION = 6
 
 
-def _check_search_cache(postcode: str, radius_miles: int, max_results: int) -> Optional[dict]:
+def _check_search_cache(
+    postcode: str,
+    radius_miles: int,
+    max_results: int,
+    origin_key: str = "centroid",
+) -> Optional[dict]:
     """
     Return a recent cached search result if any cached row's actual_radius_miles
     is at least the requested radius_miles AND its max_results is ≥ requested.
     A wider-area cached search is a valid superset for a narrower request.
+    Rows are scoped to the same distance origin (precise school vs centroid).
     """
     if not supabase:
         return None
@@ -862,8 +1154,9 @@ def _check_search_cache(postcode: str, radius_miles: int, max_results: int) -> O
     try:
         res = (
             supabase.table("care_home_searches")
-            .select("payload, radius_miles, max_results, cached_at")
+            .select("payload, radius_miles, max_results, cached_at, origin_key")
             .eq("postcode", _normalize_postcode(postcode))
+            .eq("origin_key", origin_key)
             .gte("cached_at", cutoff)
             .order("cached_at", desc=True)
             .limit(10)
@@ -889,7 +1182,11 @@ def _check_search_cache(postcode: str, radius_miles: int, max_results: int) -> O
 
 
 def _save_search_to_cache(
-    postcode: str, radius_miles: int, max_results: int, result: dict
+    postcode: str,
+    radius_miles: int,
+    max_results: int,
+    result: dict,
+    origin_key: str = "centroid",
 ) -> None:
     if not supabase or not result.get("results"):
         return
@@ -898,6 +1195,7 @@ def _save_search_to_cache(
             "postcode": _normalize_postcode(postcode),
             "radius_miles": radius_miles,
             "max_results": max_results,
+            "origin_key": origin_key,
             "source": result.get("source"),
             "payload": {**result, "cache_version": SEARCH_CACHE_VERSION},
         }).execute()
@@ -1004,7 +1302,66 @@ def _enrich_with_emails(homes: list[dict], fallback_postcode: str) -> None:
             seen_emails.add(em)
 
 
-def search_care_homes(postcode: str, radius_miles: int = 1, max_results: int = 5) -> dict:
+def _enrich_with_managers(homes: list[dict], fallback_postcode: str) -> None:
+    """Cross-check each home's manager against carehome.co.uk (the more current
+    source) in parallel, and stamp provenance. Mutates each home dict:
+      • manager                          → carehome.co.uk name if confidently found, else CQC value
+      • manager_source                   → "carehome_co_uk" | "cqc_register" | None
+      • manager_checked_against_carehome → bool
+      • manager_note                     → short "verify on carehome.co.uk" caveat
+    Never invents a name — falls back to the CQC value on any miss. Mirrors
+    _enrich_with_emails so a single failed lookup can't nuke the batch."""
+    if not homes:
+        return
+
+    def lookup(home: dict) -> dict:
+        manager = home.get("manager") or ""
+        cqc_manager = manager if "not listed" not in manager.lower() else None
+        return find_manager_via_web_search(
+            care_home_name=home.get("name") or "",
+            postcode=home.get("postcode") or fallback_postcode,
+            cqc_manager=cqc_manager,
+        )
+
+    results: list[dict] = [{} for _ in homes]
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_index = {executor.submit(lookup, home): i for i, home in enumerate(homes)}
+        for fut in as_completed(future_to_index):
+            idx = future_to_index[fut]
+            try:
+                results[idx] = fut.result()
+            except Exception as e:
+                print(f"[search] manager cross-check failed for home #{idx}: {e}")
+
+    for home, res in zip(homes, results):
+        name = res.get("manager")
+        source = res.get("source")
+        if name and "not listed" not in name.lower():
+            home["manager"] = name
+            home["manager_source"] = source
+            home["manager_checked_against_carehome"] = bool(res.get("checked"))
+            if source == "carehome_co_uk":
+                home["manager_note"] = "Manager per carehome.co.uk — verify before sending."
+            else:
+                # CQC value retained (no confident carehome.co.uk match).
+                home.setdefault(
+                    "manager_note",
+                    "Manager per the CQC register — may be out of date; verify on carehome.co.uk.",
+                )
+        else:
+            # No usable name from either source.
+            home["manager_source"] = None
+            home["manager_checked_against_carehome"] = bool(res.get("checked"))
+
+
+def search_care_homes(
+    postcode: str,
+    radius_miles: int = 1,
+    max_results: int = 5,
+    origin_lat: Optional[float] = None,
+    origin_lng: Optional[float] = None,
+    exclude_names: Optional[list[str]] = None,
+) -> dict:
     """
     Find care homes near a UK postcode. Default radius is 1 mile (Tony's spec:
     'within a mile of where they are in education and/or live').
@@ -1015,20 +1372,35 @@ def search_care_homes(postcode: str, radius_miles: int = 1, max_results: int = 5
     dense London postcode came back empty at every step), and each extra call
     costs ~10s plus a flake chance. Results are sorted nearest-first.
 
+    `exclude_names` lets "find me another one" return the NEXT nearest homes
+    instead of repeating ones already shown. When set, we skip the cache (it's a
+    dynamic, one-off query) and don't cache the filtered result.
+
     Result envelope includes `actual_radius_miles` so the bot can mention if it
     had to look further out than the teen's immediate area.
     """
+    # A "find another" request is dynamic — bypass the cache/coalescing entirely
+    # and compute a fresh, filtered result.
+    if exclude_names:
+        return _search_care_homes_uncached(
+            postcode, radius_miles, max_results, origin_lat, origin_lng,
+            exclude_names=exclude_names,
+        )
+
+    origin_key = _origin_key(origin_lat, origin_lng)
     # Cache check uses the requested (starting) radius — most teens search the
-    # same postcode again next session, so a hit returns instantly.
-    cached = _check_search_cache(postcode, radius_miles, max_results)
+    # same postcode again next session, so a hit returns instantly. Scoped to
+    # the distance origin so a precise-school result isn't served to a
+    # centroid-origin caller (and vice versa).
+    cached = _check_search_cache(postcode, radius_miles, max_results, origin_key)
     if cached:
         return cached
 
-    # Coalesce concurrent searches for the same postcode: the wizard's
+    # Coalesce concurrent searches for the same postcode+origin: the wizard's
     # precompute usually starts ~30-60s before the chat auto-search arrives.
     # The late caller waits for the in-flight search and reuses its cached
     # result instead of paying for (and waiting on) a full duplicate.
-    key = _normalize_postcode(postcode)
+    key = f"{_normalize_postcode(postcode)}|{origin_key}"
     with _INFLIGHT_LOCK:
         evt = _INFLIGHT_SEARCHES.get(key)
         is_owner = evt is None
@@ -1037,13 +1409,15 @@ def search_care_homes(postcode: str, radius_miles: int = 1, max_results: int = 5
             _INFLIGHT_SEARCHES[key] = evt
     if not is_owner:
         evt.wait(timeout=120)
-        cached = _check_search_cache(postcode, radius_miles, max_results)
+        cached = _check_search_cache(postcode, radius_miles, max_results, origin_key)
         if cached:
             return cached
         # Owner failed or found nothing cacheable — fall through and search.
 
     try:
-        return _search_care_homes_uncached(postcode, radius_miles, max_results)
+        return _search_care_homes_uncached(
+            postcode, radius_miles, max_results, origin_lat, origin_lng
+        )
     finally:
         if is_owner:
             with _INFLIGHT_LOCK:
@@ -1055,7 +1429,45 @@ _INFLIGHT_SEARCHES: dict[str, threading.Event] = {}
 _INFLIGHT_LOCK = threading.Lock()
 
 
-def _search_care_homes_uncached(postcode: str, radius_miles: int, max_results: int) -> dict:
+def _apply_walking_distances(homes: list[dict], origin_lat: float, origin_lng: float, max_radius: float) -> None:
+    """Upgrade the nearest homes' straight-line distances to real WALKING
+    distance + time via ORS, in place. Pre-filters by straight-line to keep the
+    matrix tiny (walking ≥ straight-line, so a home slightly past the straight-
+    line radius can still matter — keep a generous shortlist). No-ops when ORS
+    is unavailable, leaving honest straight-line values."""
+    shortlist = [h for h in homes if (h.get("distance_miles") or 0) <= max_radius][:15]
+    dests = [(h["_lat"], h["_lng"]) for h in shortlist if h.get("_lat") and h.get("_lng")]
+    if not dests:
+        return
+    walked = _walking_matrix((origin_lat, origin_lng), dests)
+    if not walked:
+        return
+    for h, (miles, minutes) in zip(shortlist, walked):
+        h["straight_line_miles"] = h.get("distance_miles")
+        h["distance_miles"] = miles
+        h["walking_minutes"] = minutes
+        h["distance_source"] = "walking"
+
+
+def _strip_internal_fields(homes: list[dict]) -> None:
+    """Drop internal-only keys (raw coords) before a result is cached/returned."""
+    for h in homes:
+        h.pop("_lat", None)
+        h.pop("_lng", None)
+
+
+def _search_care_homes_uncached(
+    postcode: str,
+    radius_miles: int,
+    max_results: int,
+    origin_lat: Optional[float] = None,
+    origin_lng: Optional[float] = None,
+    exclude_names: Optional[list[str]] = None,
+) -> dict:
+    # Names the caller has already shown ("find another") — filtered out so we
+    # return the NEXT nearest, not repeats. When set, we never write to cache.
+    excluded = {n.strip().lower() for n in (exclude_names or []) if n and n.strip()}
+
     location = postcode_to_latlng(postcode)
     if "error" in location:
         return {
@@ -1064,6 +1476,14 @@ def _search_care_homes_uncached(postcode: str, radius_miles: int, max_results: i
             "error": location["error"],
             "results": [],
         }
+
+    # Measure distances from the school's PRECISE point when we have it (passed
+    # in from geocoding), else the postcode centroid.
+    if origin_lat is not None and origin_lng is not None:
+        location["latitude"] = origin_lat
+        location["longitude"] = origin_lng
+        location["coord_precision"] = "exact"
+    origin_key = _origin_key(origin_lat, origin_lng)
 
     # Auto-expand from the requested starting radius
     # If radius_miles=1, sequence is [1, 2, 3, 5, 10]
@@ -1075,28 +1495,50 @@ def _search_care_homes_uncached(postcode: str, radius_miles: int, max_results: i
     max_radius = steps[-1]
 
     if CQC_SUBSCRIPTION_KEY:
-        cqc_homes = _fetch_cqc_care_homes(location)
+        cqc_homes = _fetch_cqc_care_homes(location, max_radius=max_radius)
         if isinstance(cqc_homes, dict):
             print(f"[search] CQC failed, using web fallback: {str(cqc_homes.get('error', ''))[:80]}")
         else:
-            # One authority-wide fetch; radius widening is a pure in-memory
-            # filter (homes arrive sorted nearest-first).
+            # Upgrade the nearest homes to real walking distance/time (ORS),
+            # then re-sort so the radius steps below filter on walking miles.
+            _apply_walking_distances(cqc_homes, location["latitude"], location["longitude"], max_radius)
+            cqc_homes.sort(key=lambda h: h["distance_miles"])
+            # Drop homes already shown ("find another") so we surface new ones.
+            if excluded:
+                cqc_homes = [
+                    h for h in cqc_homes if (h.get("name") or "").strip().lower() not in excluded
+                ]
+            # Multi-authority fetch; radius widening is a pure in-memory filter.
             for step in steps:
                 within = [h for h in cqc_homes if h["distance_miles"] <= step]
                 if within:
+                    results = within[:max_results]
+                    _strip_internal_fields(results)
                     attempt = {
                         "search_area": location.get("admin_district") or postcode,
                         "source": "cqc",
-                        "results": within[:max_results],
+                        "results": results,
                         "actual_radius_miles": step,
                         "requested_radius_miles": radius_miles,
                     }
                     if step > radius_miles:
                         print(f"[search] auto-expanded {redact_postcode(postcode)} from {radius_miles}mi → {step}mi to find results")
                     _enrich_with_emails(attempt["results"], postcode)
-                    _save_search_to_cache(postcode, radius_miles, max_results, attempt)
+                    _enrich_with_managers(attempt["results"], postcode)
+                    if not excluded:
+                        _save_search_to_cache(postcode, radius_miles, max_results, attempt, origin_key)
                     return attempt
-            # No homes within 10 miles in this authority → fall through to the web.
+            # No homes within 10 miles in these authorities → fall through to web.
+            # (If everything got excluded, tell the caller there are no more.)
+            if excluded:
+                return {
+                    "search_area": location.get("admin_district") or postcode,
+                    "source": "cqc",
+                    "results": [],
+                    "actual_radius_miles": max_radius,
+                    "requested_radius_miles": radius_miles,
+                    "note": "No more care homes nearby beyond the ones already shown.",
+                }
 
     attempt = _search_care_homes_via_web(
         postcode, max_results, radius_miles=max_radius, prefetched_location=location
@@ -1108,16 +1550,27 @@ def _search_care_homes_uncached(postcode: str, radius_miles: int, max_results: i
         return attempt
 
     results = attempt.get("results") or []
+    if excluded:
+        results = [
+            h for h in results if (h.get("name") or "").strip().lower() not in excluded
+        ]
+        attempt["results"] = results
     results.sort(key=lambda h: h.get("distance_miles") or 99)
     if results:
         furthest = max((h.get("distance_miles") or 0) for h in results)
         attempt["actual_radius_miles"] = (
             max(radius_miles, math.ceil(furthest)) if furthest else max_radius
         )
+        # Web-path distances are unvalidated model estimates — mark them so the
+        # bot renders them with the weakest wording (never as walking data).
+        for h in results:
+            h.setdefault("distance_source", "straight_line_estimate")
         _enrich_with_emails(results, postcode)
+        _enrich_with_managers(results, postcode)
     else:
         attempt["actual_radius_miles"] = max_radius
-    _save_search_to_cache(postcode, radius_miles, max_results, attempt)
+    if not excluded:
+        _save_search_to_cache(postcode, radius_miles, max_results, attempt, origin_key)
     return attempt
 
 
@@ -1138,6 +1591,30 @@ GENERIC_LOCAL_PARTS = {"info", "enquiries", "contact", "admin", "reception", "of
 def _looks_like_generic(email: str) -> bool:
     local = email.split("@", 1)[0].lower()
     return local in GENERIC_LOCAL_PARTS
+
+
+# Obvious placeholder / example addresses a grounded search sometimes fabricates
+# despite "never invent" (live test: john.smith@hello.com for a real home). A
+# wrong address is worse than none, so these are rejected and the home falls back
+# to the directory link.
+_PLACEHOLDER_EMAIL_DOMAINS = {
+    "example.com", "example.org", "example.net", "email.com", "hello.com",
+    "domain.com", "test.com", "sample.com", "company.com", "yourcompany.com",
+    "yourdomain.com", "mycompany.com", "acme.com", "placeholder.com",
+    "carehome.com", "care-home.com", "youremail.com",
+}
+_PLACEHOLDER_EMAIL_LOCALS = {
+    "john.smith", "jane.smith", "john.doe", "jane.doe", "firstname.lastname",
+    "first.last", "name.surname", "firstname", "lastname", "surname",
+    "example", "test", "user", "youremail", "your.email", "email",
+}
+
+
+def _is_placeholder_email(email: str) -> bool:
+    """True for obviously-invented example addresses (john.smith@hello.com,
+    info@example.com, firstname.lastname@..., etc.)."""
+    local, _, domain = email.strip().lower().partition("@")
+    return domain in _PLACEHOLDER_EMAIL_DOMAINS or local in _PLACEHOLDER_EMAIL_LOCALS
 
 
 # Two-label public suffixes common for UK orgs — enough to find the
@@ -1264,6 +1741,146 @@ def _save_email_to_cache(
         }).execute()
     except Exception as e:
         print(f"[email-cache] insert failed: {e}")
+
+
+# ---- Manager cross-check (carehome.co.uk) ----------------------------------
+# The CQC register's "Registered Manager" often lags the manager currently
+# shown on carehome.co.uk. We cross-check the more-current directory, cache the
+# result (like emails), and always keep the CQC value as a safe fallback.
+
+def _looks_like_person_name(value: str) -> bool:
+    """Cheap sanity gate so a grounded-search miss can't inject junk as a name:
+    letters + spaces/hyphens/apostrophes/dots, at least two words, no digits,
+    no URLs/emails."""
+    if not value:
+        return False
+    if any(c.isdigit() for c in value) or "@" in value or "http" in value.lower():
+        return False
+    if not re.fullmatch(r"[A-Za-z][A-Za-z .'\-]{1,78}", value):
+        return False
+    return len(value.split()) >= 2
+
+
+def _check_manager_cache(care_home_name: str, postcode: Optional[str] = None) -> Optional[dict]:
+    """Cached manager for a home, filtered by outward code to avoid same-name
+    cross-region collisions (mirrors _check_email_cache)."""
+    if not supabase:
+        return None
+    try:
+        res = (
+            supabase.table("care_home_managers")
+            .select("*")
+            .ilike("care_home_name", care_home_name)
+            .limit(10)
+            .execute()
+        )
+    except Exception as e:
+        print(f"[manager-cache] lookup failed: {e}")
+        return None
+    if not res.data:
+        return None
+
+    user_outward = _outward_code(postcode)
+    row: Optional[dict] = None
+    if user_outward:
+        for r in res.data:
+            if _outward_code(r.get("postcode")) == user_outward:
+                row = r
+                break
+        if row is None:
+            return None
+    else:
+        if len(res.data) == 1:
+            row = res.data[0]
+        else:
+            return None
+
+    try:
+        supabase.table("care_home_managers").update(
+            {"last_used_at": _now_iso()}
+        ).eq("id", row["id"]).execute()
+    except Exception:
+        pass
+
+    return {
+        "manager": row["manager"],
+        "source": row.get("source") or "carehome_co_uk",
+        "verified": bool(row.get("verified")),
+    }
+
+
+def _save_manager_to_cache(
+    care_home_name: str,
+    manager: str,
+    postcode: Optional[str],
+    source: str,
+    notes: Optional[str] = None,
+) -> None:
+    if not supabase:
+        return
+    try:
+        supabase.table("care_home_managers").insert({
+            "care_home_name": care_home_name,
+            "postcode": postcode,
+            "manager": manager,
+            "source": source,
+            "notes": notes,
+            "last_used_at": _now_iso(),
+        }).execute()
+    except Exception as e:
+        print(f"[manager-cache] insert failed: {e}")
+
+
+def find_manager_via_web_search(
+    care_home_name: str,
+    postcode: Optional[str],
+    cqc_manager: Optional[str],
+) -> dict:
+    """Cross-check the current manager on carehome.co.uk.
+
+    Returns {manager, source ("carehome_co_uk"|"cqc_register"), checked: bool}.
+    Falls back to the CQC value (never invents) when Gemini is unavailable or
+    no confident name is found. Results are cached like emails."""
+    fallback = {
+        "manager": cqc_manager,
+        "source": "cqc_register" if cqc_manager else None,
+        "checked": False,
+    }
+    if not care_home_name:
+        return fallback
+
+    cached = _check_manager_cache(care_home_name, postcode=postcode)
+    if cached and cached.get("manager"):
+        return {"manager": cached["manager"], "source": cached["source"], "checked": True}
+
+    if not gemini_client:
+        return fallback
+
+    safe_name = _inline_safe(care_home_name, 120)
+    locator = _inline_safe(postcode or "UK", 60)
+    prompt = (
+        f"On carehome.co.uk, find the profile page for the UK care home "
+        f"'{safe_name}' in {locator}. What is the name of its CURRENT manager "
+        f"(sometimes labelled 'Manager' or 'Registered Manager') as shown on "
+        f"that carehome.co.uk page? Reply with ONLY the manager's full name and "
+        f"nothing else. If the page doesn't clearly show a manager, or you "
+        f"cannot find the home on carehome.co.uk, reply exactly 'UNKNOWN'. "
+        f"Never guess or invent a name."
+    )
+    try:
+        text = _grounded_search(prompt)
+    except Exception as e:
+        print(f"[manager] web search failed for {safe_name}: {e}")
+        return fallback
+
+    candidate = _inline_safe(text, 80)
+    # Strip a common "Manager:" style prefix the model sometimes adds.
+    candidate = re.sub(r"(?i)^\s*(registered\s+)?manager\s*[:\-]\s*", "", candidate).strip()
+    if "UNKNOWN" in candidate.upper() or not _looks_like_person_name(candidate):
+        return fallback
+
+    _save_manager_to_cache(care_home_name, candidate, postcode, source="carehome_co_uk")
+    return {"manager": candidate, "source": "carehome_co_uk", "checked": True}
 
 
 # Domains that show up in scraped HTML but aren't the care home's contact email
@@ -1460,6 +2077,8 @@ def find_email_via_web_search(
     # the info@/contact@ email displayed on the homepage. No LLM, no cost.
     if website:
         scraped = _scrape_email_from_website(website)
+        if scraped and _is_placeholder_email(scraped):
+            scraped = None  # template/example address baked into the page markup
         if scraped:
             is_generic = _looks_like_generic(scraped)
             _save_email_to_cache(
@@ -1506,6 +2125,9 @@ def find_email_via_web_search(
         return {"found": False, "reason": f"Web search error: {e}"}
 
     matches = EMAIL_RE.findall(text)
+    # Drop obviously-fabricated placeholders (john.smith@hello.com, ...@example.com)
+    # so we never surface an invented address; better to fall back to the link.
+    matches = [m for m in matches if not _is_placeholder_email(m)]
     if not matches:
         return {"found": False, "reason": "No email found via web search"}
 
@@ -1562,7 +2184,9 @@ TOOL_DECLARATIONS: list[dict] = [
             "and returns results from whichever step found them — check the "
             "`actual_radius_miles` field in the result and tell the teen if it had "
             "to expand. Returns the closest care homes with name, address, phone, "
-            "manager name, CQC rating, email, and distance."
+            "manager name, CQC rating, email, and distance. To fetch DIFFERENT homes "
+            "when the user asks for 'another' or 'more', pass the names already shown "
+            "in `exclude_names`."
         ),
         "parameters": {
             "type": "object",
@@ -1573,6 +2197,16 @@ TOOL_DECLARATIONS: list[dict] = [
                     "description": "Starting search radius in miles. Default 1 (will auto-expand if no results).",
                 },
                 "max_results": {"type": "integer", "description": "Max care homes. Default 5."},
+                "exclude_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Names of care homes ALREADY shown to this user in the chat. "
+                        "Set this when they ask for 'another', 'more', or 'a different "
+                        "one' so the search returns the NEXT nearest homes instead of "
+                        "repeating ones they've seen."
+                    ),
+                },
             },
             "required": ["postcode"],
         },
@@ -1639,6 +2273,36 @@ TOOL_DECLARATIONS: list[dict] = [
                     "description": "Optional kind of resource, e.g. 'short videos', 'in-person course', 'app', 'podcast'",
                 },
             },
+        },
+    },
+    {
+        "name": "search_dementia_advice",
+        "description": (
+            "Search trusted UK sources for the LATEST dementia / befriending ADVICE "
+            "when a young person asks a question the curated scripts in your prompt "
+            "don't already cover, or asks for the 'newest' or 'latest' thinking "
+            "(e.g. how to respond to a specific behaviour, communication techniques, "
+            "activity ideas). This is for guidance/advice — use find_dementia_training "
+            "instead when they want training courses or resources to complete. Results "
+            "are filtered to reputable bodies (Alzheimer's Society, Dementia UK, NHS, "
+            "SCIE, Age UK, Skills for Care, CQC) plus the vetted educators Adria "
+            "Thompson and Bailey Greetham-Clark. Returns {answer, sources:[{title, "
+            "url, provider}]}, or {results: [], note: 'no_trusted_source'} when "
+            "nothing trusted was found — in that case fall back to the curated scripts."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The young person's dementia/befriending question, in plain English.",
+                },
+                "focus": {
+                    "type": "string",
+                    "description": "Optional angle to emphasise, e.g. 'communication', 'agitation', 'activities'.",
+                },
+            },
+            "required": ["question"],
         },
     },
     {
@@ -2261,6 +2925,92 @@ def find_dementia_training_resources(focus: Optional[str] = None) -> dict:
     return {"results": cleaned[:6]}
 
 
+DEMENTIA_ADVICE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string"},
+        "sources": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "url": {"type": "string"},
+                    "provider": {"type": "string"},
+                    "last_updated": {"type": "string"},
+                },
+                "required": ["title", "url"],
+            },
+        },
+    },
+    "required": ["answer", "sources"],
+}
+
+
+def search_dementia_advice(question: str, focus: Optional[str] = None) -> dict:
+    """
+    Use Google-Search-grounded Gemini to fetch fresh dementia/befriending ADVICE
+    (not training courses — that's find_dementia_training_resources) synthesised
+    from reputable UK sources, then drop every citation that isn't on our trusted
+    allowlist. Lets the chat brain answer questions the curated scripts don't
+    cover, using the latest guidance, without a human vetting each source first.
+    """
+    if not gemini_client:
+        return {"error": "Gemini not configured", "results": []}
+
+    # The question comes from the young person via the model — flatten it so it
+    # can't smuggle instructions into the grounded prompt (same hygiene as the
+    # other user-derived web searches).
+    clean_q = _inline_safe(question, 200)
+    if not clean_q:
+        return {"results": [], "note": "no_trusted_source"}
+    focus_hint = f" Angle to emphasise: {_inline_safe(focus, 80)}." if focus else ""
+
+    prompt = (
+        f"A young UK volunteer dementia befriender (aged 16-21) asks:\n"
+        f'"{clean_q}"{focus_hint}\n\n'
+        f"Answer with practical, kind, non-clinical advice they can use on a care "
+        f"home visit. Use ONLY reputable UK sources: Alzheimer's Society, Dementia "
+        f"UK, NHS, Social Care Institute for Excellence (SCIE), Age UK, Skills for "
+        f"Care, CQC, Alzheimer's Research UK, Dementia Friends, or the vetted "
+        f"educators Adria Thompson (BeLight Care) and Bailey Greetham-Clark. "
+        f"Prefer 2024-2026 guidance. Return STRICT JSON only:\n\n"
+        '{"answer": "2-4 sentences of practical advice in plain English",\n'
+        ' "sources": [\n'
+        '   {"title": "...", "url": "https://...", "provider": "organisation or '
+        'educator name", "last_updated": "year or date if known, else \'\'"}\n'
+        " ]}\n\n"
+        "Rules:\n"
+        " - Every claim in `answer` must be supported by a source you actually found.\n"
+        " - Cite the real page URL for each source — never invent a URL.\n"
+        " - If you cannot find trusted guidance, return an empty `sources` array.\n"
+        " - Do not include general search engines, forums, blogs, or news sites."
+    )
+
+    try:
+        text = _grounded_search(prompt, response_schema=DEMENTIA_ADVICE_SCHEMA)
+    except Exception as e:
+        return {"error": f"Web search error: {e}", "results": []}
+
+    data = _parse_json_response(text)
+    if data is None:
+        return {"error": "Search returned no parseable JSON", "results": []}
+
+    # Server-side allowlist gate — the trust guarantee. Anything not on an
+    # authoritative domain (or a vetted educator's social channel) is dropped, so
+    # the brain never sees, and can never cite, an unvetted source.
+    trusted = [
+        s for s in (data.get("sources") or [])
+        if _is_trusted_source(s.get("url"))
+    ]
+    if not trusted:
+        # No trusted backing survived — tell the brain so it falls back honestly
+        # to the curated scripts rather than presenting an unsourced answer.
+        return {"results": [], "note": "no_trusted_source"}
+
+    return {"answer": (data.get("answer") or "").strip(), "sources": trusted[:5]}
+
+
 def list_curated_training() -> list[dict]:
     """Active rows from training_resources, sorted by added_at desc."""
     if not supabase:
@@ -2305,6 +3055,107 @@ def verify_token(token: str) -> Optional[dict]:
         return json.loads(msg.decode())
     except Exception:
         return None
+
+
+# ============================================================
+# ADMIN (coordinator) AUTH — per-user @yopey.org login
+# ============================================================
+# Passwords hashed with stdlib PBKDF2 (no new deps). Sessions are signed with the
+# existing make_token/verify_token HMAC pattern. Sign-up is verified by a 6-digit
+# code emailed to the @yopey.org address, so nobody can claim someone else's email.
+
+ADMIN_SESSION_TTL_DAYS = 7
+ADMIN_CODE_TTL_MINUTES = 15
+_PBKDF2_ITERATIONS = 200_000
+
+
+def _hash_password(password: str) -> str:
+    salt = os.urandom(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, _PBKDF2_ITERATIONS)
+    return (
+        f"pbkdf2_sha256${_PBKDF2_ITERATIONS}$"
+        f"{base64.b64encode(salt).decode()}${base64.b64encode(dk).decode()}"
+    )
+
+
+def _verify_password(password: str, stored: Optional[str]) -> bool:
+    try:
+        algo, iters, salt_b64, hash_b64 = (stored or "").split("$")
+        if algo != "pbkdf2_sha256":
+            return False
+        dk = hashlib.pbkdf2_hmac(
+            "sha256", password.encode(), base64.b64decode(salt_b64), int(iters)
+        )
+        return hmac.compare_digest(dk, base64.b64decode(hash_b64))
+    except Exception:
+        return False
+
+
+def _hash_code(code: str) -> str:
+    """Deterministic HMAC of a short verification code (so we never store it raw)."""
+    return hmac.new(EMAIL_TOKEN_SECRET.encode(), code.encode(), hashlib.sha256).hexdigest()
+
+
+def _new_verification_code() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def normalize_email(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+def is_allowed_admin_email(email: str) -> bool:
+    """Exactly one @, and the domain is EXACTLY ADMIN_EMAIL_DOMAIN (so
+    'x@yopey.org.evil.com' or 'x@notyopey.org' are rejected)."""
+    e = normalize_email(email)
+    if e.count("@") != 1:
+        return False
+    local, domain = e.split("@")
+    return bool(local) and domain == ADMIN_EMAIL_DOMAIN
+
+
+def make_admin_session(email: str) -> str:
+    exp = (datetime.now(timezone.utc) + timedelta(days=ADMIN_SESSION_TTL_DAYS)).isoformat()
+    return make_token({"k": "admin", "email": normalize_email(email), "exp": exp})
+
+
+def _get_admin(email: str) -> Optional[dict]:
+    if not supabase:
+        return None
+    try:
+        res = (
+            supabase.table("admin_users")
+            .select("*")
+            .eq("email", normalize_email(email))
+            .limit(1)
+            .execute()
+        )
+        return res.data[0] if res.data else None
+    except Exception as e:
+        print(f"[admin] lookup failed: {e}")
+        return None
+
+
+def verify_admin_session(token: str) -> Optional[str]:
+    """Return the admin email if the token is a valid, unexpired admin session for
+    an email that is still a verified admin, else None (so deleting the row or
+    letting it expire revokes access)."""
+    data = verify_token(token or "")
+    if not data or data.get("k") != "admin":
+        return None
+    exp = data.get("exp")
+    try:
+        if not exp or datetime.fromisoformat(exp) < datetime.now(timezone.utc):
+            return None
+    except Exception:
+        return None
+    email = normalize_email(data.get("email", ""))
+    if not is_allowed_admin_email(email):
+        return None
+    admin = _get_admin(email)
+    if not admin or not admin.get("verified"):
+        return None
+    return email
 
 
 # ----- Short post-match emails, each with a single yes/no question -----
@@ -2897,10 +3748,37 @@ def execute_tool(tool_name: str, args: dict, user_id: str, trigger_message: Opti
         return json.dumps({"status": "recorded", "internal": result})
 
     if tool_name == "search_care_homes":
+        searched_postcode = args["postcode"]
+        # When the teen is searching near their SCHOOL and we've resolved that
+        # school to a precise point, measure distances from the actual school
+        # building rather than the postcode centroid (more accurate walking
+        # distances). Only applies when the searched postcode is the school's.
+        origin_lat = origin_lng = None
+        user = get_user(user_id)
+        if user and user.get("search_preference") == "school" and user.get("school_name"):
+            cached_school = _check_school_cache(user["school_name"])
+            if (
+                cached_school
+                and cached_school.get("latitude") is not None
+                and cached_school.get("longitude") is not None
+                and _normalize_postcode(cached_school.get("postcode", ""))
+                == _normalize_postcode(searched_postcode)
+            ):
+                origin_lat = cached_school["latitude"]
+                origin_lng = cached_school["longitude"]
+        raw_exclude = args.get("exclude_names") or []
+        exclude_names = (
+            [str(n) for n in raw_exclude if str(n).strip()]
+            if isinstance(raw_exclude, list)
+            else None
+        )
         results = search_care_homes(
-            postcode=args["postcode"],
+            postcode=searched_postcode,
             radius_miles=args.get("radius_miles", 10),
             max_results=args.get("max_results", 5),
+            origin_lat=origin_lat,
+            origin_lng=origin_lng,
+            exclude_names=exclude_names,
         )
         return json.dumps(results)
 
@@ -2937,6 +3815,13 @@ def execute_tool(tool_name: str, args: dict, user_id: str, trigger_message: Opti
 
     if tool_name == "find_dementia_training":
         result = find_dementia_training_resources(focus=args.get("focus"))
+        return json.dumps(result)
+
+    if tool_name == "search_dementia_advice":
+        result = search_dementia_advice(
+            question=args.get("question", ""),
+            focus=args.get("focus"),
+        )
         return json.dumps(result)
 
     if tool_name == "mark_care_home_replied":
@@ -3271,6 +4156,31 @@ def _build_contacts_context(user_id: str) -> str:
     return "\n\n== CARE HOMES THEY'VE CONTACTED ==\n" + "\n\n".join(parts)
 
 
+def _pii_placeholders(user: dict) -> dict[str, str]:
+    """Map of placeholder token -> the user's real value, for the identity
+    fields we keep PRIVATE from the model. The model only ever sees the tokens
+    (e.g. [FIRST_NAME]); we substitute the real values back in on the way OUT to
+    the young person (and for staff on the dashboard). Only includes fields that
+    are actually set, so we never substitute an empty string."""
+    m: dict[str, str] = {}
+    if user.get("first_name"):
+        m["[FIRST_NAME]"] = str(user["first_name"])
+    if user.get("surname"):
+        m["[SURNAME]"] = str(user["surname"])
+    if user.get("email"):
+        m["[EMAIL]"] = str(user["email"])
+    return m
+
+
+def _fill_placeholders(text: Optional[str], placeholders: dict[str, str]) -> str:
+    """Replace [FIRST_NAME]/[SURNAME]/[EMAIL] tokens with the real values."""
+    if not text:
+        return text or ""
+    for token, real in placeholders.items():
+        text = text.replace(token, real)
+    return text
+
+
 def chat(user_message: str, user_id: str) -> str:
     user = get_user(user_id)
     if not user:
@@ -3286,12 +4196,23 @@ def chat(user_message: str, user_id: str) -> str:
         + "\n\n== YOPEY SAFEGUARDING CONTACT (a real person — use this when "
         + f"signposting) ==\n{YOPEY_SAFEGUARDING_CONTACT}\n"
         + "\n== KNOWN USER DETAILS ==\n"
-        # These values are user-supplied (onboarding / save_user_details) and go
-        # into the high-privilege system instruction, so flatten them first.
-        + f"First name: {_inline_safe(user.get('first_name'), 50)}\n"
-        + f"Age: {user.get('age')}\n"
-        + (f"Surname: {_inline_safe(user.get('surname'), 50)}\n" if user.get("surname") else "")
-        + (f"Email: {_inline_safe(user.get('email'), 120)}\n" if user.get("email") else "")
+        # PRIVACY: the young person's identity (first name, surname, email) is
+        # NEVER sent to the model. It only sees PLACEHOLDER tokens; the real
+        # values live in Supabase and are substituted back into the reply before
+        # the young person (or a coordinator) sees it. Age is not sent at all
+        # (the prompt keeps replies age-appropriate generically and forbids age
+        # in emails). Postcode IS sent — the model must pass it to the search
+        # tool, and it is coarse (area, never a full home address).
+        + "First name: [FIRST_NAME]\n"
+        + ("Surname: [SURNAME]\n" if user.get("surname") else "")
+        + ("Email: [EMAIL]\n" if user.get("email") else "")
+        + "(The bracketed tokens above are PLACEHOLDERS. The real name, surname "
+          "and email are kept private from you. Use each token exactly as written "
+          "wherever you would write that detail — for example the email greeting "
+          "and signature. They are automatically replaced with the real values "
+          "before the young person sees your reply. Never guess the real values "
+          "and never ask the young person to repeat details you already have as a "
+          "token.)\n"
         + (f"Search postcode (used for the CURRENT search): {_inline_safe(user.get('postcode'), 12)}\n" if user.get("postcode") else "")
         + (f"Home postcode: {_inline_safe(user.get('home_postcode'), 12)}\n" if user.get("home_postcode") else "")
         + (f"School postcode: {_inline_safe(user.get('school_postcode'), 12)}\n" if user.get("school_postcode") else "")
@@ -3405,9 +4326,12 @@ def chat(user_message: str, user_id: str) -> str:
         if not _has_signposting(assistant_reply):
             assistant_reply = (assistant_reply.rstrip() + "\n\n" + CRISIS_SIGNPOST).strip()
 
+    # Store the reply WITH placeholders (so the model keeps seeing tokens, not
+    # real identity, when this history is replayed next turn), but substitute
+    # the real values into what we return to the young person.
     history.append({"role": "assistant", "content": assistant_reply})
     save_conversation(user_id, history)
-    return assistant_reply
+    return _fill_placeholders(assistant_reply, _pii_placeholders(user))
 
 
 # ============================================================
@@ -3502,6 +4426,23 @@ class ChatResponse(BaseModel):
     reply: str
 
 
+class GuideMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=4000)
+
+
+class GuideAssistantRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=1000)
+    # Prior turns for follow-ups ("summarise that", "what about the owner bit?").
+    # Capped so a bot can't send a giant history to inflate the prompt (the
+    # answer function also only uses the last 6 turns).
+    history: list[GuideMessage] = Field(default_factory=list, max_length=20)
+
+
+class GuideAssistantResponse(BaseModel):
+    answer: str
+
+
 class MarkReplyRequest(BaseModel):
     contact_id: str
     outcome: str  # 'accepted' or 'rejected'
@@ -3509,26 +4450,196 @@ class MarkReplyRequest(BaseModel):
 
 # ---- Dashboard auth ----
 
-def require_dashboard_auth(x_dashboard_password: str = Header(default="")) -> None:
-    if x_dashboard_password != DASHBOARD_PASSWORD:
-        raise HTTPException(status_code=401, detail="Wrong password")
+def _bearer_token(authorization: str) -> str:
+    """Extract the token from an 'Authorization: Bearer <token>' header."""
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return ""
+
+
+def require_admin(authorization: str = Header(default="")) -> str:
+    """FastAPI dependency: require a valid admin session token. Returns the
+    authenticated admin's email (usable by the endpoint for an audit trail)."""
+    email = verify_admin_session(_bearer_token(authorization))
+    if not email:
+        raise HTTPException(status_code=401, detail="Please sign in.")
+    return email
+
+
+def require_dashboard_auth(authorization: str = Header(default="")) -> str:
+    """Back-compat name kept so every existing Depends(require_dashboard_auth)
+    route now requires a real per-user admin session instead of a shared
+    password."""
+    return require_admin(authorization)
 
 
 def require_user_token(
     user_id: str,
     x_user_token: str = Header(default=""),
-    x_dashboard_password: str = Header(default=""),
+    authorization: str = Header(default=""),
 ) -> None:
     """
     Accepts either:
       • X-User-Token: valid HMAC token for the path user_id (self-service), OR
-      • X-Dashboard-Password: dashboard admin password (Tony's admin actions)
+      • Authorization: Bearer <admin session token> (a coordinator's admin action).
     """
-    if x_dashboard_password and x_dashboard_password == DASHBOARD_PASSWORD:
+    if verify_admin_session(_bearer_token(authorization)):
         return
     if verify_user_token(user_id, x_user_token):
         return
     raise HTTPException(status_code=401, detail="Missing or invalid credentials")
+
+
+# ---- Admin auth endpoints (per-user @yopey.org login) ----
+
+class AdminRegisterRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=10, max_length=200)
+
+
+class AdminVerifyRequest(BaseModel):
+    email: EmailStr
+    code: str = Field(min_length=4, max_length=8)
+
+
+class AdminLoginRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=200)
+
+
+class AdminChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(min_length=10, max_length=200)
+
+
+class AdminSessionResponse(BaseModel):
+    token: str
+    email: str
+
+
+def _require_supabase() -> None:
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Server not configured (database unavailable).")
+
+
+@app.post("/api/admin/register")
+@limiter.limit("5/minute")
+def admin_register(req: AdminRegisterRequest, request: Request):
+    """Start sign-up: validate the @yopey.org email, store a pending account, and
+    email a 6-digit verification code so only the inbox owner can activate it."""
+    _require_supabase()
+    email = normalize_email(req.email)
+    if not is_allowed_admin_email(email):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Only @{ADMIN_EMAIL_DOMAIN} email addresses can access the dashboard.",
+        )
+    existing = _get_admin(email)
+    if existing and existing.get("verified"):
+        raise HTTPException(
+            status_code=409,
+            detail="An account with this email already exists — please sign in.",
+        )
+    code = _new_verification_code()
+    expires = (datetime.now(timezone.utc) + timedelta(minutes=ADMIN_CODE_TTL_MINUTES)).isoformat()
+    try:
+        supabase.table("admin_users").upsert({
+            "email": email,
+            "password_hash": _hash_password(req.password),
+            "verified": False,
+            "verification_code_hash": _hash_code(code),
+            "code_expires_at": expires,
+        }, on_conflict="email").execute()
+    except Exception as e:
+        print(f"[admin] register upsert failed: {e}")
+        raise HTTPException(status_code=500, detail="Could not start sign-up. Please try again.")
+
+    body = (
+        f"Your YOPEY dashboard verification code is {code}\n\n"
+        f"It expires in {ADMIN_CODE_TTL_MINUTES} minutes. "
+        f"If you didn't request this, you can ignore this email."
+    )
+    sent = send_email(email, "Your YOPEY dashboard verification code", body)
+    if not sent:
+        # Dev fallback (no Resend configured): surface the code in the logs so
+        # local testing still works. In production Resend is set, so this never
+        # prints a real code.
+        print(f"[admin] verification code for {redact_email(email)}: {code} (email not sent)")
+    return {"status": "verification_sent"}
+
+
+@app.post("/api/admin/verify", response_model=AdminSessionResponse)
+@limiter.limit("10/minute")
+def admin_verify(req: AdminVerifyRequest, request: Request):
+    """Confirm the emailed code → activate the account and return a session token."""
+    _require_supabase()
+    email = normalize_email(req.email)
+    admin = _get_admin(email)
+    if not admin or not admin.get("verification_code_hash") or not admin.get("code_expires_at"):
+        raise HTTPException(status_code=400, detail="No pending sign-up. Please register again.")
+    try:
+        expired = datetime.fromisoformat(admin["code_expires_at"]) < datetime.now(timezone.utc)
+    except Exception:
+        expired = True
+    if expired:
+        raise HTTPException(status_code=400, detail="That code has expired. Please register again.")
+    if not hmac.compare_digest(admin["verification_code_hash"], _hash_code(req.code.strip())):
+        raise HTTPException(status_code=400, detail="Incorrect code.")
+    try:
+        supabase.table("admin_users").update({
+            "verified": True,
+            "verification_code_hash": None,
+            "code_expires_at": None,
+            "last_login_at": _now_iso(),
+        }).eq("email", email).execute()
+    except Exception as e:
+        print(f"[admin] verify update failed: {e}")
+        raise HTTPException(status_code=500, detail="Could not verify. Please try again.")
+    return AdminSessionResponse(token=make_admin_session(email), email=email)
+
+
+@app.post("/api/admin/login", response_model=AdminSessionResponse)
+@limiter.limit("10/minute")
+def admin_login(req: AdminLoginRequest, request: Request):
+    _require_supabase()
+    email = normalize_email(req.email)
+    admin = _get_admin(email)
+    if admin and not admin.get("verified"):
+        raise HTTPException(
+            status_code=403,
+            detail="Please finish signing up — check your email for the verification code.",
+        )
+    if not admin or not _verify_password(req.password, admin.get("password_hash")):
+        raise HTTPException(status_code=401, detail="Wrong email or password.")
+    try:
+        supabase.table("admin_users").update({"last_login_at": _now_iso()}).eq("email", email).execute()
+    except Exception:
+        pass
+    return AdminSessionResponse(token=make_admin_session(email), email=email)
+
+
+@app.post("/api/admin/change-password")
+@limiter.limit("10/minute")
+def admin_change_password(
+    req: AdminChangePasswordRequest, request: Request, admin_email: str = Depends(require_admin)
+):
+    _require_supabase()
+    admin = _get_admin(admin_email)
+    if not admin or not _verify_password(req.current_password, admin.get("password_hash")):
+        raise HTTPException(status_code=401, detail="Your current password is incorrect.")
+    try:
+        supabase.table("admin_users").update(
+            {"password_hash": _hash_password(req.new_password)}
+        ).eq("email", admin_email).execute()
+    except Exception as e:
+        print(f"[admin] change-password failed: {e}")
+        raise HTTPException(status_code=500, detail="Could not change password. Please try again.")
+    return {"status": "changed"}
+
+
+@app.get("/api/admin/me")
+def admin_me(admin_email: str = Depends(require_admin)):
+    return {"email": admin_email}
 
 
 # ---- Public endpoints ----
@@ -3848,7 +4959,7 @@ class GeocodeSchoolResponse(BaseModel):
 
 
 @app.get("/api/geocode-school", response_model=GeocodeSchoolResponse)
-@limiter.limit("30/minute")
+@limiter.limit("15/minute")
 def geocode_school_endpoint(request: Request, name: str):
     """
     Called by Step 1 of the wizard before advancing — pre-validates that we
@@ -3890,7 +5001,7 @@ def _run_precompute(postcode: str) -> None:
 
 
 @app.post("/api/precompute-search", status_code=202)
-@limiter.limit("20/minute")
+@limiter.limit("8/minute")
 def precompute_search_endpoint(
     req: PrecomputeSearchRequest, request: Request, background_tasks: BackgroundTasks
 ):
@@ -4078,8 +5189,8 @@ def test_reminder(
     The sample care home is clearly labelled TEST and the buttons point at a
     non-existent contact, so clicking them won't touch real data.
     """
-    valid_secrets = [s for s in (CRON_SECRET, DASHBOARD_PASSWORD) if s and s != "changeme"]
-    if not any(hmac.compare_digest(secret, s) for s in valid_secrets):
+    valid_secrets = [s for s in (CRON_SECRET,) if s]
+    if not valid_secrets or not any(hmac.compare_digest(secret, s) for s in valid_secrets):
         raise HTTPException(status_code=401, detail="Bad or missing secret")
     if not RESEND_API_KEY:
         raise HTTPException(status_code=503, detail="RESEND_API_KEY not configured")
@@ -4242,7 +5353,7 @@ def return_exchange(req: ReturnExchangeRequest, request: Request):
 
 
 @app.post("/api/quick-start", response_model=OnboardResponse)
-@limiter.limit("10/minute")
+@limiter.limit("5/minute")
 def quick_start_endpoint(req: QuickStartRequest, request: Request):
     """Minimal onboarding for the 'ask for advice' / 'polish a visit report'
     routes — no postcode, no survey. Creates a user from name + age + email so
@@ -4266,7 +5377,7 @@ def quick_start_endpoint(req: QuickStartRequest, request: Request):
 
 
 @app.post("/api/onboard", response_model=OnboardResponse)
-@limiter.limit("10/minute")
+@limiter.limit("5/minute")
 def onboard_endpoint(req: OnboardRequest, request: Request):
     """Called by the pre-chat wizard. Creates or upserts user record."""
     _require_services()
@@ -4361,11 +5472,266 @@ def survey_endpoint(req: SurveyRequest, request: Request, x_user_token: str = He
 
 @app.post("/api/chat", response_model=ChatResponse)
 @limiter.limit("30/minute")
-def chat_endpoint(req: ChatRequest, request: Request):
-    """Main chat endpoint for the frontend widget."""
+def chat_endpoint(
+    req: ChatRequest,
+    request: Request,
+    x_user_token: str = Header(default=""),
+    authorization: str = Header(default=""),
+):
+    """Main chat endpoint for the frontend widget.
+
+    Gated so only a registered young person (holding the signed token issued for
+    THIS user_id at onboarding) or a signed-in admin can spend an AI turn. This
+    stops anonymous bots/scrapers from hammering the Gemini-backed chat with
+    arbitrary user_ids and running up cost."""
     _require_services()
+    if not (
+        verify_admin_session(_bearer_token(authorization))
+        or verify_user_token(req.user_id, x_user_token)
+    ):
+        raise HTTPException(status_code=401, detail="Please sign up first to use the chat.")
     reply = chat(req.message, req.user_id)
     return ChatResponse(reply=reply)
+
+
+# ============================================================
+# GUIDE ASSISTANT — a small helper that answers questions about
+# how the agent works, for the /guide page. It ONLY knows the text
+# below (no user data, no dashboard access, no tools). Keep GUIDE_TEXT
+# in sync with frontend/app/guide/page.tsx (the human-readable version).
+# ============================================================
+
+GUIDE_TEXT = """
+YOPEY BEFRIENDER, HOW THE AGENT WORKS (help guide)
+
+WHAT THE AGENT IS
+An AI chatbot that helps young people (aged 16 to 21) volunteer as dementia
+befrienders. It finds nearby CQC registered care homes, drafts an introduction
+email the young person sends themselves, sends gentle reminder emails, polishes
+their visit reports afterwards, and shares dementia awareness training. A
+coordinator dashboard (at /dashboard) lets YOPEY staff track progress and review
+safeguarding alerts. Each coordinator signs in with their own YOPEY email and
+password.
+
+=====================================================================
+GUIDE FOR THE USER (the young volunteer using the chat)
+=====================================================================
+
+WHAT IT IS FOR
+YOPEY Befriender is here to help you become a volunteer dementia befriender,
+every step of the way. It finds care homes near you and helps you write a first
+message to them, then reminds you to follow up if you have not heard back. It can
+share free dementia training so you feel confident before you visit, and
+afterwards it helps you polish your visit reports. The goal is simple: to help
+you start spending time with elderly residents and make a real difference.
+
+WHAT IT CAN HELP YOU WITH
+• Find care homes near your school, college or home, with walking distance and
+  time to each, when available.
+• Write a friendly introduction email to a care home manager, in your own name.
+• Remind you to follow up if you have not heard back (after 3, 5, 7 and 10 days).
+• Polish a visit report after you have volunteered, so it reads clearly.
+• Point you to free dementia awareness training (for example Dementia Friends).
+• Encourage you and answer questions about befriending.
+Example questions you can ask:
+  1. "Find care homes near IP33 3YU."
+  2. "Can you help me write an email to the manager?"
+  3. "I am nervous about my first visit, any tips?"
+  4. "Can you tidy up my visit report?"
+  5. "The manager said yes, what do I do next?"
+It is good at: local care home search, drafting emails, tidying visit reports,
+encouragement, and signposting training. It is NOT a medical or crisis service.
+
+WHAT IT DOES
+• Finds nearby care homes, with walking distance and time to each.
+• Drafts an introduction email in the young person's own name.
+• Reminds about following up if there is no reply.
+• Polishes a visit report afterwards, so it reads clearly.
+• Points to free dementia awareness training.
+WHAT IT DOES NOT DO
+• It drafts the introduction email, but the young person sends it themselves. It
+  never sends it for them.
+• It never contacts, emails or phones a care home on anyone's behalf.
+• It does not take any action for the young person or make decisions for them.
+• It is not a medical or crisis service, and it cannot guarantee a place.
+
+HOW TO ACCESS IT
+Open the YOPEY Befriender website and press "Find a care home". You need to be
+16 or over. You answer a few quick questions (first name, age, email, and your
+postcode or school), and a short survey about attitudes to dementia that takes a
+couple of minutes, then you start typing to the assistant. If you leave and come
+back, you can pick up again through a link YOPEY emails you. It can also appear
+as a chat bubble on partner websites that have added it.
+
+HOW TO GET THE BEST OUT OF IT
+• Give it your postcode or school name so it searches the right area.
+• Be specific, for example "email in a warm, casual tone" or "homes within 1 mile".
+• If an answer is not quite right, say so and ask it to try again ("make the
+  email shorter", "search a bit wider").
+• You can always ask it to redo or explain anything.
+
+WHEN THE AGENT CANNOT HELP
+• If it does not know, or a detail looks off (a distance, a manager name),
+  double check on carehome.co.uk or the CQC website, and tell your YOPEY
+  coordinator.
+• If anything about your safety or wellbeing comes up, contact YOPEY's
+  safeguarding lead (the human fallback). If you mention something worrying, the
+  agent will also quietly alert a YOPEY staff member so a real person can help.
+• To flag a bad answer so it gets fixed, tell your YOPEY coordinator what you
+  asked and what it replied.
+
+=====================================================================
+GUIDE FOR THE OWNER (the coordinator who manages the agent)
+=====================================================================
+
+WHAT THIS AGENT DOES
+Purpose: it helps a young person find a local care home and DRAFTS a first
+introduction email that the young person then sends themselves, in minutes,
+instead of YOPEY doing this outreach by manual phone calls.
+It also: gates signups to age 16 and over, runs a short Dementia Attitudes
+survey at signup (to measure how volunteering changes attitudes), and can be
+embedded on partner websites as a floating chat bubble.
+WHAT IT DOES
+• Finds nearby care homes, with walking distance and time to each.
+• Drafts an introduction email in the young person's own name.
+• Reminds about following up if there is no reply.
+• Polishes a visit report afterwards, so it reads clearly.
+• Points to free dementia awareness training.
+WHAT IT DOES NOT DO
+• It drafts the introduction email, but the young person sends it themselves. It
+  never sends it for them.
+• It never contacts, emails or phones a care home on anyone's behalf.
+• It does not take any action for the young person or make decisions for them.
+• It is not a medical or crisis service, and it cannot guarantee a place.
+
+HOW IT WORKS BEHIND THE SCENES
+The knowledge comes from live sources, not a fixed database:
+• CQC public API, the list of care homes, addresses, ratings, and the registered
+  manager (the official regulator's register).
+• postcodes.io and Nominatim, turn postcodes and school names into locations.
+• OpenRouteService, real walking distance and time to each home (when
+  ORS_API_KEY is set, otherwise it falls back to straight line distance).
+• carehome.co.uk (via grounded web search), cross checks the current manager,
+  which the CQC register can lag on.
+• Google Gemini, the chat brain and the web search lookups.
+• The behaviour rules live in backend/system_prompt.txt.
+How to update the knowledge:
+• Change how it talks or behaves: edit backend/system_prompt.txt.
+• Training resources: the training_resources table in Supabase.
+• Verified care home emails: seed the care_home_emails table.
+• API keys and settings: the backend environment variables in Render.
+How often to review: check the dashboard and safeguarding alerts weekly, and
+review the system prompt and training links roughly monthly (CQC data refreshes
+about once a month).
+
+HOW TO MONITOR IT
+• The coordinator dashboard at /dashboard shows signups, who is waiting for a
+  reply, who is stuck, matches, survey scores, and a Safeguarding panel. You can
+  open each young person's full conversation log.
+• Signing in: each coordinator creates their own account at /dashboard using
+  their own @yopey.org email and a password, confirmed once by a 6 digit code
+  emailed to them. There is no shared password. Only @yopey.org addresses can
+  register, and you can change your own password from the dashboard. When a
+  coordinator resolves a safeguarding alert, their email is recorded as who
+  actioned it.
+• Signs it is failing: empty care home results, distances that look wrong,
+  missing nearby homes, unactioned safeguarding alerts, or 503 errors (usually a
+  missing or expired API key, so check Render).
+• Good performance looks like: nearby homes returned within the search radius
+  with sensible walking distances, emails drafted, replies logged, and
+  safeguarding alerts raised and resolved promptly.
+
+HOW TO IMPROVE IT
+• Add a new topic or change tone: edit backend/system_prompt.txt.
+• Fix a wrong answer: correct it at the source (the system prompt for behaviour,
+  the relevant Supabase table for data, the API key for a broken lookup).
+• If something breaks (503s, no results, errors): check the API keys in Render
+  and the backend logs, then contact the developer or maintainer.
+
+GOVERNANCE
+• Data it CAN access: the young person's onboarding details (name, age, email,
+  postcode or school), their chat, survey answers, visit reports, and their care
+  home activity.
+• Data it CANNOT access: anything outside this app. It does not browse the young
+  person's device or accounts. The /guide helper specifically has NO access to
+  any user data, it only knows this help text.
+• Data retention: a young person's personal data is kept while their account is
+  active and is automatically deleted after 12 months (one year) of inactivity.
+  They can also delete their own data at any time at /privacy. Safeguarding
+  records follow a separate, agreed retention period.
+• Privacy: the service follows UK GDPR and the ICO Children's Code (users may be
+  minors). See DPIA.md. Location is kept coarse (postcode or school area, never
+  the young person's full home address). Processors include Supabase, Google
+  Gemini, CQC, postcodes.io, Nominatim, OpenRouteService, and Resend.
+• Safeguarding detection: the agent automatically watches for possible concerns
+  in a young person's chat (for example distress, abuse, or a worry about a care
+  home) and raises an alert for staff to review.
+• Escalation path: when the agent cannot help or a concern arises, it points the
+  young person to YOPEY's named safeguarding lead, and staff act via the
+  Safeguarding panel on the dashboard. See SAFEGUARDING.md.
+"""
+
+
+def _guide_assistant_answer(question: str, history: list["GuideMessage"]) -> str:
+    """Answer a question strictly from GUIDE_TEXT. No tools, no user data."""
+    if not gemini_client:
+        return (
+            "The guide assistant is unavailable right now. You can still read the "
+            "full guide on this page, or contact your YOPEY coordinator."
+        )
+    # Flatten any prior turns (defence-in-depth: they're user-supplied).
+    convo = ""
+    for m in history[-6:]:
+        who = "User" if m.role == "user" else "Assistant"
+        convo += f"{who}: {_inline_safe(m.content, 500)}\n"
+    convo_block = f"Conversation so far:\n{convo}\n" if convo else ""
+    safe_question = _inline_safe(question, 1000)
+    prompt = (
+        "You are a HELP and DOCUMENTATION assistant that ONLY explains how the "
+        "YOPEY Befriender agent works, using the guide below. You are NOT the "
+        "befriender assistant itself.\n"
+        "Strict rules:\n"
+        "- Answer using ONLY the guide. You may summarise, list, or explain any "
+        "part of it.\n"
+        "- Do NOT perform the agent's tasks. Never offer to draft or write an "
+        "email, search for or suggest care homes, contact a home, or polish a "
+        "visit report. Never ask the user for a postcode, a care home, or any "
+        "personal details.\n"
+        "- If the user asks you to do one of those things (for example 'write an "
+        "email' or 'find care homes near me'), explain that the main YOPEY "
+        "Befriender assistant does that, and tell them how to start it (open the "
+        "site and press 'Find a care home'). Do NOT do the task yourself and do "
+        "NOT invite them to start it with you.\n"
+        "- If the answer isn't in the guide, say you can only help with how this "
+        "agent works and suggest they contact their YOPEY coordinator. Never "
+        "invent features, contacts, or data.\n"
+        "- Keep answers short and plain; use **bold** for key terms and short "
+        "bullet lists where helpful.\n\n"
+        f"=== GUIDE ===\n{GUIDE_TEXT}\n=== END GUIDE ===\n\n"
+        f"{convo_block}"
+        f"User question: {safe_question}\n\n"
+        "Answer (about the guide only):"
+    )
+    try:
+        response = gemini_client.models.generate_content(
+            model=SEARCH_MODEL, contents=prompt
+        )
+        return (response.text or "").strip() or (
+            "I'm not sure — try rephrasing, or read the relevant section above."
+        )
+    except Exception as e:
+        print(f"[guide-assistant] error: {e}")
+        return (
+            "Sorry, I couldn't answer just now. Please try again, or read the "
+            "guide above."
+        )
+
+
+@app.post("/api/guide-assistant", response_model=GuideAssistantResponse)
+@limiter.limit("8/minute")
+def guide_assistant_endpoint(req: GuideAssistantRequest, request: Request):
+    """Q&A over the help guide only — no user data, no auth needed."""
+    return GuideAssistantResponse(answer=_guide_assistant_answer(req.question, req.history))
 
 
 # ---- Dashboard endpoints (password-protected) ----
@@ -4501,9 +5867,13 @@ def dashboard_conversation(user_id: str):
             detail="Transcripts are viewable only for conversations with a safeguarding flag.",
         )
     raw = load_conversation(user_id)
+    # Assistant turns are stored with identity placeholders (kept private from
+    # the model); fill in the real values so the safeguarding lead reads a
+    # normal transcript.
+    ph = _pii_placeholders(get_user(user_id) or {})
     # Strip tool plumbing — show only the human-readable turns.
     transcript = [
-        {"role": m["role"], "content": m.get("content") or ""}
+        {"role": m["role"], "content": _fill_placeholders(m.get("content") or "", ph)}
         for m in raw
         if m.get("role") in ("user", "assistant") and m.get("content")
     ]
@@ -4511,20 +5881,22 @@ def dashboard_conversation(user_id: str):
 
 
 class ResolveAlertRequest(BaseModel):
-    resolved_by: str = Field(min_length=1, max_length=80)
+    # resolved_by is no longer taken from the client — we record the authenticated
+    # admin's email as the real audit trail. Kept optional for back-compat.
+    resolved_by: Optional[str] = Field(default=None, max_length=80)
     notes: Optional[str] = None
 
 
-@app.post(
-    "/api/dashboard/safeguarding/{alert_id}/resolve",
-    dependencies=[Depends(require_dashboard_auth)],
-)
-def resolve_safeguarding(alert_id: str, req: ResolveAlertRequest):
-    """Mark a safeguarding alert as actioned by a named person."""
+@app.post("/api/dashboard/safeguarding/{alert_id}/resolve")
+def resolve_safeguarding(
+    alert_id: str, req: ResolveAlertRequest, admin_email: str = Depends(require_admin)
+):
+    """Mark a safeguarding alert as actioned. Records WHO actioned it (the signed-in
+    coordinator's email) rather than a client-supplied name."""
     try:
         supabase.table("safeguarding_alerts").update({
             "resolved": True,
-            "resolved_by": req.resolved_by,
+            "resolved_by": admin_email,
             "resolved_at": _now_iso(),
             "notes": req.notes,
         }).eq("id", alert_id).execute()

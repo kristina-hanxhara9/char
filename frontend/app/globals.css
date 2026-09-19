@@ -66,6 +66,9 @@ body {
 .chat-prose {
   white-space: pre-wrap;
   word-wrap: break-word;
+  /* Break very long unbroken tokens (URLs / emails) so they never overflow the
+     message bubble on narrow screens. */
+  overflow-wrap: anywhere;
 }
 .chat-prose a {
   color: #3F008A;           /* yopey-primary */

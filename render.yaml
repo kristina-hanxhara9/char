@@ -19,9 +19,13 @@ services:
         sync: false
       - key: SUPABASE_KEY
         sync: false
-      - key: DASHBOARD_PASSWORD
-        sync: false
+      # Coordinators sign up with their own @yopey.org email + password (no
+      # shared dashboard password). EMAIL_TOKEN_SECRET signs their sessions.
       - key: EMAIL_TOKEN_SECRET
+        sync: false
+      # Optional — email domain allowed to register for the dashboard
+      # (defaults to yopey.org in code).
+      - key: ADMIN_EMAIL_DOMAIN
         sync: false
       - key: APP_BASE_URL
         sync: false

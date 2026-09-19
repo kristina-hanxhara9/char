@@ -16,7 +16,7 @@ frontend/     Next.js 14 site (landing, onboard form, chat, admin dashboard)
 - **Care home search** — live CQC API, returns 5 nearest care homes by distance
 - **Email drafting** — bot writes personalised intro letters
 - **Escalating nudges** — automated reminder emails at 3, 5, 7, 10 days
-- **Dashboard** — password-protected admin view with stats and tables (name, surname, email, age, postcode)
+- **Dashboard** — admin view (stats and tables: name, surname, email, age, postcode). Each coordinator signs in with their own @yopey.org email and password, verified by a 6 digit code emailed at sign-up (no shared password)
 - **Mobile-first** — Tailwind responsive design, safe-area insets, 16px inputs (no iOS zoom)
 - **Embeddable widget** — one `<script>` tag drops the whole flow onto any partner website as a floating chat bubble (see below)
 
@@ -62,7 +62,7 @@ cd backend
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# Edit .env with your keys (Gemini, Supabase, Resend, dashboard password)
+# Edit .env with your keys (Gemini, Supabase, Resend, EMAIL_TOKEN_SECRET)
 python agent.py
 # server now on http://localhost:8000
 ```
@@ -103,9 +103,10 @@ Example crontab — 9am UTC daily:
 | `GEMINI_API_KEY` | Yes | from aistudio.google.com (new keys start `AQ.`, legacy `AIza` accepted) — use a billing-enabled project (paid tier excludes data from training) |
 | `SUPABASE_URL` | Yes | https://xxxxx.supabase.co |
 | `SUPABASE_KEY` | Yes | **service_role** key |
-| `RESEND_API_KEY` | For nudges | resend.com |
+| `RESEND_API_KEY` | Yes | resend.com — also sends dashboard sign-up codes |
 | `EMAIL_FROM` | For nudges | e.g. `YOPEY <hello@yopey.org>` |
-| `DASHBOARD_PASSWORD` | Yes | shared password for Tony's dashboard |
+| `EMAIL_TOKEN_SECRET` | Yes | long random string — signs dashboard sessions and email links |
+| `ADMIN_EMAIL_DOMAIN` | Optional | email domain allowed to register for the dashboard (default `yopey.org`) |
 | `ALLOWED_ORIGINS` | Yes | comma-separated frontend origins |
 | `CQC_PARTNER_CODE` | Optional | from cqc.org.uk if you have one |
 | `PORT` | Optional | defaults to 8000 |
@@ -141,7 +142,7 @@ Example crontab — 9am UTC daily:
 6. Verify bot returns real care home names matching cqc.org.uk for that postcode.
 7. Confirm `contacts` row written when bot logs the email send.
 8. Test nudge: `UPDATE contacts SET contacted_at = NOW() - INTERVAL '3 days'`, then run `python agent.py --nudge` — confirm Resend dashboard shows the email.
-9. Visit `/dashboard`, enter password, confirm tables populate and "Refresh" works.
+9. Visit `/dashboard`, choose "Create an account" with a @yopey.org email, enter the 6 digit code (shown in the backend logs if Resend is unset), then confirm tables populate and "Refresh" works.
 
 ## Costs (rough)
 

@@ -28,7 +28,8 @@ export default function ChatWidget() {
           type="button"
           onClick={openPanel}
           aria-label="Find a care home"
-          className="fixed bottom-5 right-5 z-[2147483000] flex items-center gap-2 rounded-full bg-yopey-accent text-yopey-ink font-semibold px-5 py-3.5 shadow-lg hover:-translate-y-0.5 transition active:scale-95"
+          style={{ bottom: "max(1.25rem, env(safe-area-inset-bottom))" }}
+          className="fixed right-5 z-[2147483000] flex items-center gap-2 rounded-full bg-yopey-accent text-yopey-ink font-semibold px-5 py-3.5 shadow-lg hover:-translate-y-0.5 transition active:scale-95"
         >
           <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
             <path
@@ -51,7 +52,7 @@ export default function ChatWidget() {
             open ? "flex" : "hidden"
           }`}
         >
-          <div className="flex items-center justify-between px-4 py-2.5 bg-yopey-accent text-yopey-ink shrink-0">
+          <div className="flex items-center justify-between px-4 py-2.5 bg-yopey-accent text-yopey-ink shrink-0 safe-top">
             <span className="flex items-baseline gap-1.5">
               <span className="font-extrabold tracking-wide">YOPEY</span>
               <span className="italic opacity-75 text-sm">Befriender</span>
@@ -60,7 +61,7 @@ export default function ChatWidget() {
               type="button"
               onClick={() => setOpen(false)}
               aria-label="Close chat"
-              className="w-8 h-8 grid place-items-center rounded-lg hover:bg-black/10 text-lg leading-none"
+              className="w-11 h-11 grid place-items-center rounded-lg hover:bg-black/10 text-lg leading-none"
             >
               ✕
             </button>

@@ -234,12 +234,15 @@ export default function ChatWindow() {
 
   if (!user) {
     return (
-      <div className="h-screen grid place-items-center text-gray-500">Loading...</div>
+      <div className="h-[100dvh] grid place-items-center text-gray-500">Loading...</div>
     );
   }
 
   return (
-    <div className="h-screen flex flex-col">
+    // 100dvh (not 100vh): the dynamic viewport unit shrinks when the mobile
+    // on-screen keyboard opens, so the input bar stays visible above it instead
+    // of being pushed off-screen.
+    <div className="h-[100dvh] flex flex-col">
       {!embedded && (
         <header className="shrink-0 bg-yopey-accent px-4 md:px-6 py-3 safe-top">
           <div className="flex items-center justify-between max-w-3xl mx-auto">
@@ -329,7 +332,7 @@ export default function ChatWindow() {
                 type="button"
                 disabled={pending}
                 onClick={() => send("Please find me another care home near my postcode.")}
-                className="shrink-0 whitespace-nowrap px-3 py-2 rounded-full border-2 border-yopey-primary/30 text-yopey-primary text-sm font-semibold hover:bg-yopey-primary/10 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                className="shrink-0 whitespace-nowrap px-4 min-h-[44px] rounded-full border-2 border-yopey-primary/30 text-yopey-primary text-sm font-semibold hover:bg-yopey-primary/10 transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Find another care home
               </button>
@@ -337,7 +340,7 @@ export default function ChatWindow() {
                 type="button"
                 disabled={pending}
                 onClick={() => send("Can I get some advice about volunteering as a befriender?")}
-                className="shrink-0 whitespace-nowrap px-3 py-2 rounded-full border-2 border-yopey-primary/30 text-yopey-primary text-sm font-semibold hover:bg-yopey-primary/10 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                className="shrink-0 whitespace-nowrap px-4 min-h-[44px] rounded-full border-2 border-yopey-primary/30 text-yopey-primary text-sm font-semibold hover:bg-yopey-primary/10 transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Ask for advice
               </button>
@@ -345,7 +348,7 @@ export default function ChatWindow() {
                 type="button"
                 disabled={pending}
                 onClick={() => send("I'd like help polishing a visit report.")}
-                className="shrink-0 whitespace-nowrap px-3 py-2 rounded-full border-2 border-yopey-primary/30 text-yopey-primary text-sm font-semibold hover:bg-yopey-primary/10 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                className="shrink-0 whitespace-nowrap px-4 min-h-[44px] rounded-full border-2 border-yopey-primary/30 text-yopey-primary text-sm font-semibold hover:bg-yopey-primary/10 transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Polish a visit report
               </button>

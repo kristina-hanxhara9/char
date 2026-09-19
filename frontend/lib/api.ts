@@ -1,3 +1,5 @@
+import { userStorage } from "@/lib/storage";
+
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -221,9 +223,16 @@ export async function sendMessage(
   user_id: string,
   message: string
 ): Promise<string> {
+  // Attach the per-user token issued at onboarding (stored before any chat
+  // fires) so the backend can confirm this is a registered YB, not an
+  // anonymous bot. The chat endpoint rejects calls without it.
+  const token = userStorage.get()?.user_token || "";
   const res = await fetch(`${API_URL}/api/chat`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { "X-User-Token": token } : {}),
+    },
     body: JSON.stringify({ user_id, message }),
   });
   if (!res.ok) {
@@ -234,12 +243,105 @@ export async function sendMessage(
   return data.reply as string;
 }
 
+export type GuideMessage = { role: "user" | "assistant"; content: string };
+
+export async function askGuide(
+  question: string,
+  history: GuideMessage[] = []
+): Promise<string> {
+  // Q&A over the help guide only — no auth, no user data.
+  const res = await fetch(`${API_URL}/api/guide-assistant`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question, history }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `Guide assistant failed (${res.status})`);
+  }
+  const data = await res.json();
+  return data.answer as string;
+}
+
+// ---- Admin auth (per-coordinator @yopey.org accounts) ----
+
+export type AdminSession = { token: string; email: string };
+
+function bearer(token: string): Record<string, string> {
+  return { Authorization: `Bearer ${token}` };
+}
+
+export async function adminRegister(email: string, password: string): Promise<void> {
+  const res = await fetch(`${API_URL}/api/admin/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `Sign-up failed (${res.status})`);
+  }
+}
+
+export async function adminVerify(email: string, code: string): Promise<AdminSession> {
+  const res = await fetch(`${API_URL}/api/admin/verify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, code }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `Verification failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function adminLogin(email: string, password: string): Promise<AdminSession> {
+  const res = await fetch(`${API_URL}/api/admin/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `Sign-in failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function adminChangePassword(
+  current_password: string,
+  new_password: string,
+  token: string
+): Promise<void> {
+  const res = await fetch(`${API_URL}/api/admin/change-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...bearer(token) },
+    body: JSON.stringify({ current_password, new_password }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `Couldn't change password (${res.status})`);
+  }
+}
+
+export async function adminMe(token: string): Promise<{ email: string }> {
+  const res = await fetch(`${API_URL}/api/admin/me`, {
+    headers: bearer(token),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `Not signed in (${res.status})`);
+  }
+  return res.json();
+}
+
 export async function fetchDashboard<T = unknown>(
   path: string,
-  password: string
+  token: string
 ): Promise<T> {
   const res = await fetch(`${API_URL}/api/dashboard/${path}`, {
-    headers: { "X-Dashboard-Password": password },
+    headers: bearer(token),
   });
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}));
@@ -251,14 +353,11 @@ export async function fetchDashboard<T = unknown>(
 export async function markReply(
   contact_id: string,
   outcome: "accepted" | "rejected",
-  password: string
+  token: string
 ): Promise<void> {
   const res = await fetch(`${API_URL}/api/dashboard/mark-reply`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Dashboard-Password": password,
-    },
+    headers: { "Content-Type": "application/json", ...bearer(token) },
     body: JSON.stringify({ contact_id, outcome }),
   });
   if (!res.ok) {
@@ -269,10 +368,10 @@ export async function markReply(
 
 export async function fetchConversation(
   user_id: string,
-  password: string
+  token: string
 ): Promise<{ user_id: string; messages: { role: string; content: string }[] }> {
   const res = await fetch(`${API_URL}/api/dashboard/conversation/${user_id}`, {
-    headers: { "X-Dashboard-Password": password },
+    headers: bearer(token),
   });
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}));
@@ -283,19 +382,17 @@ export async function fetchConversation(
 
 export async function resolveSafeguarding(
   alert_id: string,
-  resolved_by: string,
-  password: string,
+  token: string,
   notes?: string
 ): Promise<void> {
+  // The backend records the resolving admin from the authenticated session,
+  // so we no longer send a free-text "resolved_by".
   const res = await fetch(
     `${API_URL}/api/dashboard/safeguarding/${alert_id}/resolve`,
     {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Dashboard-Password": password,
-      },
-      body: JSON.stringify({ resolved_by, notes }),
+      headers: { "Content-Type": "application/json", ...bearer(token) },
+      body: JSON.stringify({ notes }),
     }
   );
   if (!res.ok) {
@@ -304,12 +401,12 @@ export async function resolveSafeguarding(
   }
 }
 
-export async function adminDeleteUser(user_id: string, password: string): Promise<void> {
-  // Same endpoint, but admin auth via X-Dashboard-Password header instead
-  // of the user's HMAC token (the dashboard doesn't know the user's token).
+export async function adminDeleteUser(user_id: string, token: string): Promise<void> {
+  // Same endpoint as user self-delete, but authenticated as a coordinator via
+  // the admin session token (the dashboard doesn't know the user's HMAC token).
   const res = await fetch(`${API_URL}/api/user/${user_id}`, {
     method: "DELETE",
-    headers: { "X-Dashboard-Password": password },
+    headers: bearer(token),
   });
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}));

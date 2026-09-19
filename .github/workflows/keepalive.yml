@@ -12,7 +12,11 @@ name: Keep backend and Supabase warm
 # 5-min checks) pointed at /api/keepalive.
 on:
   schedule:
-    - cron: "*/10 * * * *" # request every 10 min (GitHub may run it less often)
+    # Hourly. Every-10-min (*/10) was throttled by GitHub and the backlog runs
+    # showed up as "cancelled"; on a private repo it can also exhaust the free
+    # Actions minutes (which would silently stop the daily reminder emails too).
+    # Hourly is plenty to stop Supabase pausing (it idles after ~7 days).
+    - cron: "0 * * * *" # request hourly
   workflow_dispatch: {}
 
 jobs:
@@ -25,7 +29,7 @@ jobs:
         # it doesn't email on every run. The request still reaches Render and
         # keeps it warm; once the backend is deployed, the 200 also touches the DB.
         run: |
-          url="${{ vars.BACKEND_URL || 'https://char-2nu6.onrender.com' }}/api/keepalive"
+          url="${{ vars.BACKEND_URL || 'https://char-rmun.onrender.com' }}/api/keepalive"
           code=$(curl -sS --max-time 90 -o /dev/null -w '%{http_code}' "$url" || echo 000)
           echo "keepalive -> HTTP $code"
           if [ "$code" = "200" ]; then

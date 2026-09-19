@@ -53,7 +53,7 @@ export default function StartScreen() {
       </div>
 
       <p className="mt-5 text-xs text-gray-500 text-center">
-        Only finding a care home needs a few quick questions. Free · UK · 13–24
+        Only finding a care home needs a few quick questions. Free · UK · 16–24
       </p>
     </div>
   );

@@ -10,7 +10,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 /**
  * Minimal sign-in for the "ask for advice" / "polish a visit report" routes.
  * These don't need a postcode or the dementia survey, so we skip the full
- * onboarding wizard and collect just name + age (13–24 gate) + email + consent,
+ * onboarding wizard and collect just name + age (16–24 gate) + email + consent,
  * then drop the user straight into the chat with the matching intent.
  */
 export default function QuickStartForm() {
@@ -45,8 +45,8 @@ export default function QuickStartForm() {
     e.preventDefault();
     const age = parseInt(ageStr, 10);
     if (!firstName.trim()) return setError("Please enter your first name.");
-    if (!Number.isFinite(age) || age < 13 || age > 24)
-      return setError("You need to be aged 13–24 to use YOPEY Befriender.");
+    if (!Number.isFinite(age) || age < 16 || age > 24)
+      return setError("You need to be aged 16–24 to use YOPEY Befriender.");
     if (!EMAIL_RE.test(email.trim())) return setError("Please enter a valid email.");
     if (!consent) return setError("Please tick the consent box to continue.");
 
@@ -108,7 +108,7 @@ export default function QuickStartForm() {
             id="qs-age"
             type="number"
             inputMode="numeric"
-            min={13}
+            min={16}
             max={24}
             value={ageStr}
             onChange={(e) => setAgeStr(e.target.value)}
@@ -144,7 +144,7 @@ export default function QuickStartForm() {
             className="mt-1 w-5 h-5 accent-yopey-primary cursor-pointer"
           />
           <span className="text-sm text-gray-700 leading-relaxed">
-            I confirm I am <strong>aged 13–24</strong>, and I&apos;m happy for YOPEY to
+            I confirm I am <strong>aged 16–24</strong>, and I&apos;m happy for YOPEY to
             store my name, email and my chat with the bot so it can help me. I&apos;ve
             read the{" "}
             <a

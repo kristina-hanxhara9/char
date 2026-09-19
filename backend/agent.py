@@ -21,7 +21,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal, Optional, Union
+from typing import Any, Literal, Optional
 
 import requests
 from dotenv import load_dotenv
@@ -2450,7 +2450,7 @@ POST_MATCH_RESPONSES = {
         "html": """
             <p>Two quick things you could do next:</p>
             <ul>
-              <li><strong>Bring a friend</strong> — forward <a href="https://www.yopeybefriender.org">yopeybefriender.org</a> to anyone aged 13–24</li>
+              <li><strong>Bring a friend</strong> — forward <a href="https://www.yopeybefriender.org">yopeybefriender.org</a> to anyone aged 16–24</li>
               <li><strong>Share a moment</strong> on social — tag <strong>@yopeybefriender</strong>. Even a couple of lines about a resident helps inspire other young people.</li>
             </ul>
             <p>Thank you for showing up. Really.</p>
@@ -3283,9 +3283,9 @@ def chat(user_message: str, user_id: str) -> str:
     # the teen-facing YOPEY safeguarding contact (used in the safeguarding flows).
     sys_prompt = (
         SYSTEM_PROMPT
-        + f"\n\n== YOPEY SAFEGUARDING CONTACT (a real person — use this when "
+        + "\n\n== YOPEY SAFEGUARDING CONTACT (a real person — use this when "
         + f"signposting) ==\n{YOPEY_SAFEGUARDING_CONTACT}\n"
-        + f"\n== KNOWN USER DETAILS ==\n"
+        + "\n== KNOWN USER DETAILS ==\n"
         # These values are user-supplied (onboarding / save_user_details) and go
         # into the high-privilege system instruction, so flatten them first.
         + f"First name: {_inline_safe(user.get('first_name'), 50)}\n"
@@ -3439,7 +3439,7 @@ class OnboardRequest(BaseModel):
     """
     first_name: str = Field(min_length=1, max_length=50)
     surname: str = Field(min_length=1, max_length=50)
-    age: int = Field(ge=13, le=24, description="Must be aged 13–24")
+    age: int = Field(ge=16, le=24, description="Must be aged 16–24")
     email: EmailStr
     phone: str = Field(min_length=5, max_length=20)
     home_postcode: str = Field(min_length=3, max_length=10)
@@ -3453,9 +3453,9 @@ class OnboardRequest(BaseModel):
 class QuickStartRequest(BaseModel):
     """Lightweight onboarding for the advice / visit-report routes, which don't
     need a postcode or the survey — just enough to run the chat and keep a
-    safeguarding contact on file: name, age (the 13–24 gate) and email."""
+    safeguarding contact on file: name, age (the 16–24 gate) and email."""
     first_name: str = Field(min_length=1, max_length=50)
-    age: int = Field(ge=13, le=24, description="Must be aged 13–24")
+    age: int = Field(ge=16, le=24, description="Must be aged 16–24")
     email: EmailStr
     utm_source: Optional[str] = None
 

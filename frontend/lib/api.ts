@@ -237,7 +237,11 @@ export async function sendMessage(
   });
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}));
-    throw new Error(detail.detail || `Chat failed (${res.status})`);
+    const err = new Error(detail.detail || `Chat failed (${res.status})`) as Error & {
+      status?: number;
+    };
+    err.status = res.status;
+    throw err;
   }
   const data = await res.json();
   return data.reply as string;

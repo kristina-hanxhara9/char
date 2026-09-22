@@ -2621,47 +2621,24 @@ NUDGE_SCHEDULE = [
         "days": 3,
         "subject": "Heard back yet, {name}?",
         "intro": "It's been 3 days since you contacted {care_home}.",
-        "waiting_tip_html": (
-            "<p>Still early — give it a few more days. Care home managers are busy.</p>"
-            "<p>Quick thing to do while you wait: become a "
-            "<a href='https://www.dementiafriends.org.uk/'>Dementia Friend</a> (15 min, free).</p>"
-        ),
     },
     {
         "stage": 2,
         "days": 5,
         "subject": "Heard from {care_home}?",
         "intro": "5 days now since you contacted {care_home}.",
-        "waiting_tip_html": (
-            "<p>Sometimes emails get lost — a quick call usually sorts it.</p>"
-            "<p>📞 <strong>{phone}</strong></p>"
-            "<p>Just say: <em>\"I sent an email about volunteering as a YOPEY Befriender — "
-            "did the manager get it?\"</em></p>"
-        ),
     },
     {
         "stage": 3,
         "days": 7,
         "subject": "One week in — any news?",
         "intro": "A week since you contacted {care_home}.",
-        "waiting_tip_html": (
-            "<p>Two options:</p>"
-            "<p>📞 <strong>Call them:</strong> {phone}</p>"
-            "<p>🔄 <strong>Try the next care home:</strong> come back to the "
-            "<a href='https://www.yopeybefriender.org'>chat</a> and I'll help.</p>"
-            "<p>Most befrienders try 2–3 homes before a match — you're doing brilliantly.</p>"
-        ),
     },
     {
         "stage": 4,
         "days": 10,
         "subject": "10 days, {name} — time to move on?",
         "intro": "It's been 10 days since you contacted {care_home}.",
-        "waiting_tip_html": (
-            "<p>Time to try another home. Come back to the "
-            "<a href='https://www.yopeybefriender.org'>chat</a> and I'll find one nearby.</p>"
-            "<p>Most people give up after one home. You're still going. 💪</p>"
-        ),
     },
 ]
 
@@ -3383,10 +3360,24 @@ RESPONSE_PAGE_TEMPLATE = """<!DOCTYPE html>
 """
 
 RESPONSE_PAGE_INVALID = RESPONSE_PAGE_TEMPLATE.format(
-    title="Hmm, that link's expired",
-    body="<p>This response link is either invalid or has already been used. "
-         "If you meant to reply, email <a href='mailto:hello@yopey.org'>hello@yopey.org</a> "
-         "and Tony will sort it.</p>",
+    title="That link has expired — but here's what to do next",
+    body=(
+        "<p>This link is old or has already been used, so we couldn't record your click. "
+        "No problem — if you're still waiting to hear back from a care home, here's what "
+        "usually works:</p>"
+        "<ul>"
+        "<li><strong>Give them a call</strong> and ask for the manager by name, or a "
+        "leading member of the activities team (they're usually the ones who work with "
+        "volunteers). Just say: <em>\"I sent a letter/email about volunteering as a YOPEY "
+        "Befriender — did you receive it?\"</em></li>"
+        "<li><strong>Better still, pop in</strong> with a printed copy of your letter and "
+        "hand it in — a friendly face in person is hard to beat.</li>"
+        "<li><strong>Or try another home</strong> — head back to the "
+        "<a href='https://www.yopeybefriender.org'>chatbot</a> and it'll help you find one "
+        "nearby and draft a fresh email.</li>"
+        "</ul>"
+        "<p>Stuck? Email <a href='mailto:hello@yopey.org'>hello@yopey.org</a> and we'll help.</p>"
+    ),
 )
 
 
@@ -4812,16 +4803,21 @@ NUDGE_WAITING_PAGES = {
         "title": "Try a quick call?",
         "html": (
             "<p>Sometimes emails get lost — a phone call usually sorts it.</p>"
-            "<p>Just say: <em>\"I sent an email about volunteering as a YOPEY Befriender — "
-            "did the manager get it?\"</em></p>"
+            "<p><strong>Call the home and ask for the manager by name, or a leading member "
+            "of the activities team</strong> (they're usually the ones who work with "
+            "volunteers). Just say: <em>\"I sent a letter/email about volunteering as a "
+            "YOPEY Befriender — did you receive it?\"</em></p>"
             "<p>Care home staff are usually really friendly. You've got this!</p>"
         ),
     },
     3: {
         "title": "Two options",
         "html": (
-            "<p>1) <strong>Call them</strong> — emails get lost, calls don't</p>"
-            "<p>2) <strong>Try the next care home</strong> — come back to the "
+            "<p><strong>1) Call or visit them.</strong> Ring the home and ask for the "
+            "manager by name or a lead of the activities team, and check they got your "
+            "letter/email. Better still, pop in with a printed copy and hand it in — in "
+            "person is hard to beat.</p>"
+            "<p><strong>2) Try the next care home.</strong> Come back to the "
             "<a href='https://www.yopeybefriender.org'>chat</a> and I'll help draft another email.</p>"
             "<p>Most befrienders tried 2–3 homes before a match.</p>"
         ),
@@ -4829,9 +4825,11 @@ NUDGE_WAITING_PAGES = {
     4: {
         "title": "Time to try another?",
         "html": (
-            "<p>10 days is a fair time to wait. Come back to the chat and I'll find "
-            "you another home nearby:</p>"
-            "<p>👉 <a href='https://www.yopeybefriender.org'>yopeybefriender.org</a></p>"
+            "<p>10 days is a fair wait — two things worth doing:</p>"
+            "<p><strong>Give them one last try in person.</strong> Drop into the home with "
+            "a printed copy of your letter and ask for the manager or the activities team.</p>"
+            "<p><strong>And line up another home.</strong> Come back to the "
+            "<a href='https://www.yopeybefriender.org'>chat</a> and I'll find one nearby.</p>"
             "<p>Most people give up after one home. You're still going. 💪</p>"
         ),
     },
@@ -4840,11 +4838,17 @@ NUDGE_WAITING_PAGES = {
 
 def _handle_waiting_click(data: dict) -> HTMLResponse:
     user_id = data["u"]
+    contact_id = data.get("c")
     stage = data.get("stage", 0)
-    _record_email_response(user_id, stage + 100, "waiting")  # +100 so it doesn't collide with post-match stages
-    page = NUDGE_WAITING_PAGES.get(stage)
-    if not page:
-        return HTMLResponse(content=RESPONSE_PAGE_INVALID, status_code=404)
+    # Operator test emails carry placeholder ids ("test-user"/"test-contact"),
+    # which aren't valid UUIDs — skip the DB write so the flow can be previewed
+    # safely (mirrors _handle_outcome_click).
+    is_test = user_id == "test-user" or contact_id == "test-contact"
+    if not is_test:
+        _record_email_response(user_id, stage + 100, "waiting")  # +100 so it doesn't collide with post-match stages
+    # Always show advice — fall back to the stage-2 "give them a call" page for any
+    # unexpected stage, so the teen never hits a dead-end error page.
+    page = NUDGE_WAITING_PAGES.get(stage) or NUDGE_WAITING_PAGES[2]
     return HTMLResponse(content=RESPONSE_PAGE_TEMPLATE.format(
         title=page["title"], body=page["html"]
     ))

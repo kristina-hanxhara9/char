@@ -195,7 +195,16 @@ export default function ChatWindow() {
       const reply = await sendMessage(user.user_id, trimmed);
       setMessages((m) => [...m, { role: "assistant", content: reply }]);
     } catch (err: any) {
-      setError(err.message || "Something went wrong sending your message.");
+      if (err?.status === 401) {
+        // Their sign-in token expired/changed — a plain "sign up first" is
+        // confusing for a returning user, so point them at the way back in.
+        setError(
+          "Your sign-in has expired. Please go back to the YOPEY Befriender home " +
+            "page and use “Already signed up? Get a link by email” to sign back in."
+        );
+      } else {
+        setError(err.message || "Something went wrong sending your message.");
+      }
       // Roll back: keep the user message so they can retry by editing
     } finally {
       setPending(false);

@@ -84,14 +84,9 @@ export default function OnboardForm() {
         utm_source: utmSource,
       });
 
-      // Survey is required — every field is set after Step 2.
-      await submitSurvey(
-        onboardRes.user_id,
-        onboardRes.user_token,
-        survey as SurveyAnswers,
-        "pre"
-      );
-
+      // Save the session IMMEDIATELY, before the survey, so a survey blip can't
+      // strand the user with a server-side account but no local login (which
+      // would then make every retry hit "email already registered").
       userStorage.set({
         user_id: onboardRes.user_id,
         user_token: onboardRes.user_token,
@@ -100,6 +95,19 @@ export default function OnboardForm() {
         is_student: personal.isStudent ?? false,
         search_preference: personal.searchPreference ?? "home",
       });
+
+      // The baseline survey is best-effort: the account already exists, so a
+      // transient failure here must not block them or force a re-onboard.
+      try {
+        await submitSurvey(
+          onboardRes.user_id,
+          onboardRes.user_token,
+          survey as SurveyAnswers,
+          "pre"
+        );
+      } catch (surveyErr) {
+        console.warn("[onboard] survey submit failed, continuing:", surveyErr);
+      }
 
       // Preload the care-home search only when that's where they're headed, so
       // the LLM is processing during navigation and the result is ready the

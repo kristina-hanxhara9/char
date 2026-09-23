@@ -3,6 +3,24 @@ import { userStorage } from "@/lib/storage";
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+// Wrap fetch so a NETWORK failure (Render cold-start / offline) surfaces one
+// friendly message instead of the browser's raw "Failed to fetch" — every caller
+// below inherits it. HTTP errors are still handled per-call via res.ok.
+async function apiFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit
+): Promise<Response> {
+  try {
+    return await globalThis.fetch(input, init);
+  } catch {
+    const err = new Error(
+      "We couldn't reach YOPEY — the server may be waking up. Please try again in a few seconds."
+    ) as Error & { status?: number };
+    err.status = 0; // 0 = network/transport failure (no HTTP response)
+    throw err;
+  }
+}
+
 export type OnboardPayload = {
   first_name: string;
   surname: string;
@@ -44,7 +62,7 @@ export async function requestReturnLink(email: string): Promise<void> {
   // Always resolves (the backend returns a generic response regardless of
   // whether the email exists — no enumeration). Errors are surfaced only for
   // network/validation failures.
-  const res = await fetch(`${API_URL}/api/request-return-link`, {
+  const res = await apiFetch(`${API_URL}/api/request-return-link`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email }),
@@ -65,7 +83,7 @@ export type ReturnExchange = {
 };
 
 export async function exchangeReturnToken(token: string): Promise<ReturnExchange> {
-  const res = await fetch(`${API_URL}/api/return/exchange`, {
+  const res = await apiFetch(`${API_URL}/api/return/exchange`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ token }),
@@ -99,7 +117,7 @@ export function precomputeSearch(postcode: string): Promise<void> {
 }
 
 export async function geocodeSchool(name: string): Promise<{ postcode: string }> {
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_URL}/api/geocode-school?name=${encodeURIComponent(name)}`
   );
   if (!res.ok) {
@@ -115,7 +133,7 @@ export async function submitSurvey(
   answers: SurveyAnswers,
   survey_type: "pre" | "post" = "pre"
 ): Promise<{ status: string }> {
-  const res = await fetch(`${API_URL}/api/survey`, {
+  const res = await apiFetch(`${API_URL}/api/survey`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -133,7 +151,7 @@ export async function submitSurvey(
 export async function onboard(
   payload: OnboardPayload
 ): Promise<OnboardResponse> {
-  const res = await fetch(`${API_URL}/api/onboard`, {
+  const res = await apiFetch(`${API_URL}/api/onboard`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -153,7 +171,7 @@ export async function quickStart(payload: {
   email: string;
   utm_source?: string;
 }): Promise<OnboardResponse> {
-  const res = await fetch(`${API_URL}/api/quick-start`, {
+  const res = await apiFetch(`${API_URL}/api/quick-start`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -175,7 +193,7 @@ export type UserMe = {
 };
 
 export async function fetchUser(user_id: string, user_token: string): Promise<UserMe> {
-  const res = await fetch(`${API_URL}/api/user/${user_id}`, {
+  const res = await apiFetch(`${API_URL}/api/user/${user_id}`, {
     headers: { "X-User-Token": user_token },
   });
   if (!res.ok) {
@@ -189,7 +207,7 @@ export async function deleteAccount(
   user_id: string,
   user_token: string
 ): Promise<{ status: string; deleted_rows: Record<string, number> }> {
-  const res = await fetch(`${API_URL}/api/user/${user_id}`, {
+  const res = await apiFetch(`${API_URL}/api/user/${user_id}`, {
     method: "DELETE",
     headers: { "X-User-Token": user_token },
   });
@@ -227,7 +245,7 @@ export async function sendMessage(
   // fires) so the backend can confirm this is a registered YB, not an
   // anonymous bot. The chat endpoint rejects calls without it.
   const token = userStorage.get()?.user_token || "";
-  const res = await fetch(`${API_URL}/api/chat`, {
+  const res = await apiFetch(`${API_URL}/api/chat`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -237,7 +255,11 @@ export async function sendMessage(
   });
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}));
-    throw new Error(detail.detail || `Chat failed (${res.status})`);
+    const err = new Error(detail.detail || `Chat failed (${res.status})`) as Error & {
+      status?: number;
+    };
+    err.status = res.status;
+    throw err;
   }
   const data = await res.json();
   return data.reply as string;
@@ -250,7 +272,7 @@ export async function askGuide(
   history: GuideMessage[] = []
 ): Promise<string> {
   // Q&A over the help guide only — no auth, no user data.
-  const res = await fetch(`${API_URL}/api/guide-assistant`, {
+  const res = await apiFetch(`${API_URL}/api/guide-assistant`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ question, history }),
@@ -272,7 +294,7 @@ function bearer(token: string): Record<string, string> {
 }
 
 export async function adminRegister(email: string, password: string): Promise<void> {
-  const res = await fetch(`${API_URL}/api/admin/register`, {
+  const res = await apiFetch(`${API_URL}/api/admin/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
@@ -284,7 +306,7 @@ export async function adminRegister(email: string, password: string): Promise<vo
 }
 
 export async function adminVerify(email: string, code: string): Promise<AdminSession> {
-  const res = await fetch(`${API_URL}/api/admin/verify`, {
+  const res = await apiFetch(`${API_URL}/api/admin/verify`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, code }),
@@ -297,7 +319,7 @@ export async function adminVerify(email: string, code: string): Promise<AdminSes
 }
 
 export async function adminLogin(email: string, password: string): Promise<AdminSession> {
-  const res = await fetch(`${API_URL}/api/admin/login`, {
+  const res = await apiFetch(`${API_URL}/api/admin/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
@@ -314,7 +336,7 @@ export async function adminChangePassword(
   new_password: string,
   token: string
 ): Promise<void> {
-  const res = await fetch(`${API_URL}/api/admin/change-password`, {
+  const res = await apiFetch(`${API_URL}/api/admin/change-password`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...bearer(token) },
     body: JSON.stringify({ current_password, new_password }),
@@ -326,7 +348,7 @@ export async function adminChangePassword(
 }
 
 export async function adminMe(token: string): Promise<{ email: string }> {
-  const res = await fetch(`${API_URL}/api/admin/me`, {
+  const res = await apiFetch(`${API_URL}/api/admin/me`, {
     headers: bearer(token),
   });
   if (!res.ok) {
@@ -340,7 +362,7 @@ export async function fetchDashboard<T = unknown>(
   path: string,
   token: string
 ): Promise<T> {
-  const res = await fetch(`${API_URL}/api/dashboard/${path}`, {
+  const res = await apiFetch(`${API_URL}/api/dashboard/${path}`, {
     headers: bearer(token),
   });
   if (!res.ok) {
@@ -355,7 +377,7 @@ export async function markReply(
   outcome: "accepted" | "rejected",
   token: string
 ): Promise<void> {
-  const res = await fetch(`${API_URL}/api/dashboard/mark-reply`, {
+  const res = await apiFetch(`${API_URL}/api/dashboard/mark-reply`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...bearer(token) },
     body: JSON.stringify({ contact_id, outcome }),
@@ -370,7 +392,7 @@ export async function fetchConversation(
   user_id: string,
   token: string
 ): Promise<{ user_id: string; messages: { role: string; content: string }[] }> {
-  const res = await fetch(`${API_URL}/api/dashboard/conversation/${user_id}`, {
+  const res = await apiFetch(`${API_URL}/api/dashboard/conversation/${user_id}`, {
     headers: bearer(token),
   });
   if (!res.ok) {
@@ -387,7 +409,7 @@ export async function resolveSafeguarding(
 ): Promise<void> {
   // The backend records the resolving admin from the authenticated session,
   // so we no longer send a free-text "resolved_by".
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_URL}/api/dashboard/safeguarding/${alert_id}/resolve`,
     {
       method: "POST",
@@ -404,7 +426,7 @@ export async function resolveSafeguarding(
 export async function adminDeleteUser(user_id: string, token: string): Promise<void> {
   // Same endpoint as user self-delete, but authenticated as a coordinator via
   // the admin session token (the dashboard doesn't know the user's HMAC token).
-  const res = await fetch(`${API_URL}/api/user/${user_id}`, {
+  const res = await apiFetch(`${API_URL}/api/user/${user_id}`, {
     method: "DELETE",
     headers: bearer(token),
   });

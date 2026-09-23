@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { exchangeReturnToken } from "@/lib/api";
+import { exchangeReturnToken, pingBackend } from "@/lib/api";
 import { userStorage } from "@/lib/storage";
 
 function ReturnInner() {
@@ -17,22 +17,43 @@ function ReturnInner() {
       setError("This link is missing its token. Please request a new one.");
       return;
     }
+    // Wake Render first — this is often the first request after the backend has
+    // idled, and a cold-start network blip must not look like a dead link.
+    pingBackend();
+    let cancelled = false;
     (async () => {
-      try {
-        const u = await exchangeReturnToken(token);
-        userStorage.set({
-          user_id: u.user_id,
-          user_token: u.user_token,
-          first_name: u.first_name,
-          postcode: u.postcode || undefined,
-          is_student: u.is_student ?? undefined,
-          search_preference: u.search_preference ?? undefined,
-        });
-        router.replace("/"); // land on the Welcome-back hub
-      } catch (e: any) {
-        setError(e.message || "This link didn't work. Please request a new one.");
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const u = await exchangeReturnToken(token);
+          if (cancelled) return;
+          userStorage.set({
+            user_id: u.user_id,
+            user_token: u.user_token,
+            first_name: u.first_name,
+            postcode: u.postcode || undefined,
+            is_student: u.is_student ?? undefined,
+            search_preference: u.search_preference ?? undefined,
+          });
+          router.replace("/"); // land on the Welcome-back hub
+          return;
+        } catch (e: any) {
+          // status 0 = network/transport failure (server likely still waking) —
+          // wait and retry before giving up. A real expired/invalid link fails
+          // fast with a friendly message.
+          if (e?.status === 0 && attempt < 2 && !cancelled) {
+            await new Promise((r) => setTimeout(r, 2000));
+            continue;
+          }
+          if (!cancelled) {
+            setError(e?.message || "This link has expired. Please request a new one.");
+          }
+          return;
+        }
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [params, router]);
 
   return (
@@ -41,14 +62,14 @@ function ReturnInner() {
         {error ? (
           <>
             <h1 className="text-xl font-extrabold text-yopey-ink mb-2">
-              Link didn&apos;t work
+              Let&apos;s get you back in
             </h1>
             <p className="text-gray-600 text-sm mb-5">{error}</p>
             <Link
-              href="/"
+              href="/#signin"
               className="inline-block px-6 py-3 rounded-2xl bg-yopey-primary text-white font-semibold hover:opacity-90 transition min-h-[48px]"
             >
-              Back to start
+              Get a new link by email
             </Link>
           </>
         ) : (

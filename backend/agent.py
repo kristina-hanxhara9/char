@@ -3699,8 +3699,14 @@ def send_nudge_reminders() -> int:
         if not user or not user.get("email"):
             continue
 
-        contacted_at_str = contact["contacted_at"].replace("Z", "+00:00")
-        contacted_at = datetime.fromisoformat(contacted_at_str)
+        if not contact.get("contacted_at"):
+            continue
+        try:
+            contacted_at = datetime.fromisoformat(
+                contact["contacted_at"].replace("Z", "+00:00")
+            )
+        except Exception:
+            continue  # one malformed row must not abort the whole nudge run
         if contacted_at.tzinfo is None:
             contacted_at = contacted_at.replace(tzinfo=timezone.utc)
         days_waiting = (now - contacted_at).days
@@ -4685,7 +4691,11 @@ def _handle_post_match_click(data: dict) -> HTMLResponse:
     user_id = data["u"]
     stage = data["s"]
     answer = data["a"]
-    _record_email_response(user_id, stage, answer)
+    # Operator test emails carry the "test-user" placeholder id (not a valid
+    # UUID) — skip the DB write so the preview can't error (mirrors the
+    # outcome/waiting handlers).
+    if user_id != "test-user":
+        _record_email_response(user_id, stage, answer)
     branch = POST_MATCH_RESPONSES.get((stage, answer))
     if not branch:
         return HTMLResponse(content=RESPONSE_PAGE_INVALID, status_code=404)
@@ -5158,9 +5168,18 @@ def cron_daily(x_cron_secret: str = Header(default="")):
     """
     if not CRON_SECRET or not hmac.compare_digest(x_cron_secret, CRON_SECRET):
         raise HTTPException(status_code=401, detail="Bad or missing x-cron-secret")
-    nudges = send_nudge_reminders()
-    drips = send_post_match_drip()
-    purged = purge_inactive_users()
+    # Isolate the three walkers so one failing (e.g. a bad row) doesn't stop
+    # the others from running that day.
+    def _run(label, fn):
+        try:
+            return fn()
+        except Exception as e:
+            print(f"[cron] {label} failed: {e}")
+            return 0
+
+    nudges = _run("nudges", send_nudge_reminders)
+    drips = _run("post-match drip", send_post_match_drip)
+    purged = _run("purge", purge_inactive_users)
     print(
         f"[cron] daily run: {nudges} nudges, {drips} post-match emails sent, "
         f"{purged} inactive account(s) purged"

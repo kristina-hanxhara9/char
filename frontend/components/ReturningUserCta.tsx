@@ -21,6 +21,11 @@ export default function ReturningUserCta() {
   useEffect(() => {
     setUser(userStorage.get());
     setMounted(true);
+    // Coming from an expired return link (/#signin) — open the email form so
+    // signing back in is one tap, not a hunt for the small link.
+    if (typeof window !== "undefined" && window.location.hash === "#signin") {
+      setShowEmail(true);
+    }
     // Wake Render's free-tier instance as soon as the homepage loads, so the
     // magic-link request (and any onboarding that follows) hits a warm server
     // instead of a ~1-min cold start that looks like the button hanging.

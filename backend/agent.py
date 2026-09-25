@@ -5405,11 +5405,19 @@ def onboard_endpoint(req: OnboardRequest, request: Request):
     """Called by the pre-chat wizard. Creates or upserts user record."""
     _require_services()
 
-    # If they're a student and want to search near school, derive the school
-    # postcode from the school name. (The wizard no longer asks for school
-    # postcode — most teens don't know it offhand.)
+    # The wizard now asks students for their school's postcode and we search by
+    # it directly (geocoding the school NAME was resolving to nearby-but-wrong
+    # postcodes). Validate a supplied postcode up front so a typo fails clearly
+    # here rather than silently returning zero care homes later.
     resolved_school_postcode = req.school_postcode
-    if req.is_student and req.school_name and not resolved_school_postcode:
+    if resolved_school_postcode:
+        if not UK_POSTCODE_PATTERN.search(resolved_school_postcode):
+            raise HTTPException(
+                status_code=400,
+                detail="That school postcode doesn't look like a UK postcode. Please check it.",
+            )
+    elif req.is_student and req.school_name and req.search_preference == "school":
+        # Fallback for older/stale clients that still send only the school name.
         geocoded = _geocode_school(req.school_name)
         if geocoded:
             resolved_school_postcode = geocoded["postcode"]
@@ -5417,9 +5425,7 @@ def onboard_endpoint(req: OnboardRequest, request: Request):
                 f"[onboard] Geocoded school '{redact_school_name(req.school_name)}' → "
                 f"{redact_postcode(resolved_school_postcode)}"
             )
-        elif req.search_preference == "school":
-            # They explicitly chose school-based search and we can't find it.
-            # Don't silently switch to home — let them know so they can fix it.
+        else:
             raise HTTPException(
                 status_code=400,
                 detail=(

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type Dispatch, type SetStateAction } from "react";
-import { geocodeSchool, precomputeSearch } from "@/lib/api";
+import { precomputeSearch } from "@/lib/api";
 
 export type PersonalData = {
   firstName: string;
@@ -12,6 +12,7 @@ export type PersonalData = {
   homePostcode: string;
   isStudent: boolean | null;
   schoolName: string;
+  schoolPostcode: string;
   searchPreference: "home" | "school" | null;
 };
 
@@ -24,6 +25,7 @@ export const emptyPersonal: PersonalData = {
   homePostcode: "",
   isStudent: null,
   schoolName: "",
+  schoolPostcode: "",
   searchPreference: null,
 };
 
@@ -61,6 +63,11 @@ export default function Step1Personal({
   const phoneInvalid = data.phone !== "" && !PHONE_RE.test(data.phone);
   const homePostcodeInvalid =
     data.homePostcode !== "" && !UK_POSTCODE_RE.test(data.homePostcode.trim());
+  const schoolPostcodeInvalid =
+    data.schoolPostcode !== "" && !UK_POSTCODE_RE.test(data.schoolPostcode.trim());
+  // The school postcode is only needed when they've chosen to search near school.
+  const needSchoolPostcode =
+    data.isStudent === true && data.searchPreference === "school";
 
   const canNext =
     data.firstName.trim().length > 0 &&
@@ -76,6 +83,8 @@ export default function Step1Personal({
     !homePostcodeInvalid &&
     data.isStudent !== null &&
     (data.isStudent === false || data.schoolName.trim() !== "") &&
+    (!needSchoolPostcode ||
+      (data.schoolPostcode.trim() !== "" && !schoolPostcodeInvalid)) &&
     data.searchPreference !== null;
 
   function set<K extends keyof PersonalData>(key: K, value: PersonalData[K]) {
@@ -86,15 +95,15 @@ export default function Step1Personal({
     setTouched(true);
     if (!canNext) return;
 
-    // Wrap the postcode in a promise so the survey can open INSTANTLY while
-    // school geocoding (3-15s) runs in the background. For home-search it's
-    // already resolved.
-    const postcodePromise: Promise<string> =
-      data.isStudent === true &&
-      data.searchPreference === "school" &&
-      data.schoolName.trim().length > 1
-        ? geocodeSchool(data.schoolName.trim()).then((r) => r.postcode)
-        : Promise.resolve(data.homePostcode.trim().toUpperCase());
+    // Search by the postcode the teen typed — the school postcode when they're
+    // searching near school, otherwise their home postcode. We no longer geocode
+    // the school NAME (it was resolving to nearby-but-wrong postcodes); the
+    // promise stays for the parent's signature and resolves immediately.
+    const searchPostcode =
+      data.isStudent === true && data.searchPreference === "school"
+        ? data.schoolPostcode.trim().toUpperCase()
+        : data.homePostcode.trim().toUpperCase();
+    const postcodePromise: Promise<string> = Promise.resolve(searchPostcode);
 
     // Pre-warm care home search cache as soon as we know the postcode.
     // Also background — by the time the teen hits /chat, it's cached.
@@ -306,7 +315,7 @@ export default function Step1Personal({
               <p className="mt-1 text-sm text-red-600">{schoolError}</p>
             ) : (
               <p className="mt-1 text-xs text-gray-500">
-                We&apos;ll find the postcode for you — no need to look it up.
+                So YOPEY knows where you&apos;re studying.
               </p>
             )}
           </div>
@@ -340,6 +349,35 @@ export default function Step1Personal({
               </button>
             </div>
           </fieldset>
+
+          {data.searchPreference === "school" && (
+            <div>
+              <label htmlFor="schoolPostcode" className="block text-sm font-semibold text-gray-700 mb-1">
+                School / college postcode
+              </label>
+              <input
+                id="schoolPostcode"
+                type="text"
+                autoComplete="postal-code"
+                maxLength={10}
+                value={data.schoolPostcode}
+                onChange={(e) => set("schoolPostcode", e.target.value)}
+                placeholder="CO2 7EE"
+                className={`w-full px-4 py-3 rounded-xl border-2 uppercase focus:outline-none transition ${
+                  schoolPostcodeInvalid
+                    ? "border-red-400 focus:border-red-500"
+                    : "border-gray-200 focus:border-yopey-primary"
+                }`}
+              />
+              {schoolPostcodeInvalid ? (
+                <p className="mt-1 text-sm text-red-600">That doesn&apos;t look like a UK postcode.</p>
+              ) : (
+                <p className="mt-1 text-xs text-gray-500">
+                  A quick Google of your school + &quot;postcode&quot; finds it — we&apos;ll search around here.
+                </p>
+              )}
+            </div>
+          )}
         </div>
       )}
 

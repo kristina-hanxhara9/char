@@ -9,10 +9,13 @@
  *
  * Optional <script> data- attributes:
  *   data-yopey-position="left|right"   (default right)
- *   data-yopey-label="Find a care home" (launcher text, desktop)
+ *   data-yopey-label="Line 1|• Line 2" (launcher text; "|" or newline = new line.
+ *                                        Defaults to the multi-line YOPEY copy,
+ *                                        or training copy when entry is /training)
  *   data-yopey-color="#FFAD00"          (launcher + title-bar colour)
- *   data-yopey-entry="/onboard?embed=1" (iframe start path; use /chat to let
- *                                        returning users resume)
+ *   data-yopey-entry="/onboard?embed=1" (iframe start path; /training for the
+ *                                        training bubble; /chat to let returning
+ *                                        users resume)
  *
  * Because the iframe runs on YOPEY's origin, all API calls inside it are
  * same-origin to the backend's allow-list — the host site needs no CORS or
@@ -51,22 +54,46 @@
 
   var ds = (script && script.dataset) || {};
   var accent = ds.yopeyColor || "#FFAD00";
-  var label = ds.yopeyLabel || "Find a care home";
   var side = ds.yopeyPosition === "left" ? "left" : "right";
   var entry = ds.yopeyEntry || "/onboard?embed=1";
   var iframeUrl = origin + (entry.charAt(0) === "/" ? entry : "/" + entry);
+
+  // The launcher is a small multi-line "bubble". Default copy advertises what
+  // the AI does; a training embed (data-yopey-entry="/training") gets its own.
+  // An explicit data-yopey-label still overrides (split on "|" or newlines).
+  var MAIN_LABEL = [
+    "Use YOPEY’s AI to",
+    "• Find a care home to visit",
+    "• Get befriending advice",
+    "• Write better reports",
+  ];
+  var TRAINING_LABEL = ["Learn more about", "dementia and aging", "from YOPEY’s AI"];
+  var labelLines;
+  if (ds.yopeyLabel) {
+    labelLines = ds.yopeyLabel
+      .split(/\||\n/)
+      .map(function (s) { return s.trim(); })
+      .filter(function (s) { return s.length; });
+  } else if (entry.indexOf("/training") === 0) {
+    labelLines = TRAINING_LABEL;
+  } else {
+    labelLines = MAIN_LABEL;
+  }
+  var labelText = labelLines.join(", "); // accessible name
 
   var Z = 2147483000; // just below max int — sit above typical host UI
 
   var css =
     "#yopey-launcher{position:fixed;bottom:20px;" + side + ":20px;z-index:" + Z + ";" +
-    "display:flex;align-items:center;gap:8px;border:0;cursor:pointer;background:" + accent + ";" +
-    "color:#1a1a1a;font:600 15px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;" +
-    "padding:14px 18px;border-radius:999px;box-shadow:0 6px 24px rgba(0,0,0,.18);" +
+    "display:flex;align-items:center;gap:10px;border:0;cursor:pointer;text-align:left;background:" + accent + ";" +
+    "color:#1a1a1a;font:600 14px/1.35 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;" +
+    "max-width:264px;padding:12px 16px;border-radius:18px;box-shadow:0 6px 24px rgba(0,0,0,.18);" +
     "transition:transform .15s,opacity .15s}" +
     "#yopey-launcher:hover{transform:translateY(-2px)}" +
     "#yopey-launcher.yopey-hide{opacity:0;pointer-events:none;transform:scale(.9)}" +
     "#yopey-launcher svg{width:22px;height:22px;flex:none}" +
+    "#yopey-launcher .yopey-txt{display:flex;flex-direction:column;gap:1px}" +
+    "#yopey-launcher .yopey-head{font-weight:800}" +
     "#yopey-panel{position:fixed;bottom:20px;" + side + ":20px;z-index:" + (Z + 1) + ";" +
     "display:flex;flex-direction:column;width:400px;height:640px;max-height:calc(100vh - 40px);" +
     "background:#fff;border-radius:18px;overflow:hidden;box-shadow:0 16px 50px rgba(0,0,0,.30);" +
@@ -86,6 +113,7 @@
     "@media(max-width:480px){" +
     "#yopey-panel{inset:0;width:100%;height:100%;max-height:none;border-radius:0;transform:translateY(100%)}" +
     "body.yopey-open #yopey-panel{transform:none}" +
+    "#yopey-launcher{border-radius:999px;padding:14px}" +
     "#yopey-launcher .yopey-txt{display:none}}";
 
   var style = document.createElement("style");
@@ -100,9 +128,15 @@
   var launcher = document.createElement("button");
   launcher.type = "button";
   launcher.id = "yopey-launcher";
-  launcher.setAttribute("aria-label", label);
+  launcher.setAttribute("aria-label", labelText);
   launcher.innerHTML = chatIcon + '<span class="yopey-txt"></span>';
-  launcher.querySelector(".yopey-txt").textContent = label;
+  var txt = launcher.querySelector(".yopey-txt");
+  labelLines.forEach(function (line, i) {
+    var d = document.createElement("span");
+    d.className = "yopey-line" + (i === 0 ? " yopey-head" : "");
+    d.textContent = line;
+    txt.appendChild(d);
+  });
 
   var panel = null;
   var isOpen = false;

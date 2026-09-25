@@ -246,7 +246,7 @@ MAX_LLM_HISTORY = 40  # 20 user/assistant turns
 GOOGLE_SEARCH_TOOL = genai_types.Tool(google_search=genai_types.GoogleSearch())
 
 
-def _generate_content_resilient(*, model, contents, config, attempts: int = 4):
+def _generate_content_resilient(*, model, contents, config, attempts: int = 3):
     """Gemini generate_content with backoff on transient overload.
 
     Gemini flash models intermittently return 503 UNAVAILABLE ("high demand") or
@@ -278,8 +278,8 @@ def _generate_content_resilient(*, model, contents, config, attempts: int = 4):
                     f"retrying in {delay:.0f}s: {msg[:120]}"
                 )
                 time.sleep(delay)
-                delay = min(delay * 2, 8.0)
-                continue
+                delay = min(delay * 2, 2.0)  # keep total wait small so a persistent
+                continue                      # failure fails fast instead of hanging
             raise
 
 
@@ -5570,7 +5570,22 @@ def chat_endpoint(
         or verify_user_token(req.user_id, x_user_token)
     ):
         raise HTTPException(status_code=401, detail="Please sign up first to use the chat.")
-    reply = chat(req.message, req.user_id)
+    try:
+        reply = chat(req.message, req.user_id)
+    except genai_errors.APIError as e:
+        # Gemini overloaded/unavailable (e.g. 503 "high demand"). Return a normal
+        # 200 reply — a returned response flows back through the CORS middleware
+        # and carries the Access-Control-Allow-Origin header, so the widget shows
+        # a friendly message instead of an endless spinner. (A raw 500 is rendered
+        # OUTSIDE the CORS middleware, so the browser blocks it as a CORS error.)
+        print(f"[chat] Gemini error for user {redact_id(req.user_id)}: {str(e)[:150]}")
+        reply = (
+            "Sorry — I'm very busy right now and couldn't finish that. "
+            "Please try again in a few seconds."
+        )
+    except Exception as e:
+        print(f"[chat] unexpected error for user {redact_id(req.user_id)}: {e!r}")
+        reply = "Sorry — something went wrong just now. Please try again in a moment."
     return ChatResponse(reply=reply)
 
 

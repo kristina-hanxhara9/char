@@ -19,6 +19,7 @@ import secrets
 import socket
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
@@ -137,7 +138,7 @@ if not (GEMINI_KEY and SUPABASE_URL and SUPABASE_KEY):
 # declarations in one request, so the chat brain (custom tools only) and the
 # web-search helpers (grounding only) stay on separate models and configs.
 BRAIN_MODEL = "gemini-3.5-flash"        # agentic tool use + safeguarding judgement
-SEARCH_MODEL = "gemini-3.1-flash-lite"  # cheap Google-Search-grounded lookups
+SEARCH_MODEL = "gemini-3.5-flash-lite"  # cheap Google-Search-grounded lookups (GA flash-lite)
 
 # Allowlist for the dynamic "fresh advice" search (search_dementia_advice). The
 # grounded model can cite anything on the open web, so we drop every source whose
@@ -245,6 +246,43 @@ MAX_LLM_HISTORY = 40  # 20 user/assistant turns
 GOOGLE_SEARCH_TOOL = genai_types.Tool(google_search=genai_types.GoogleSearch())
 
 
+def _generate_content_resilient(*, model, contents, config, attempts: int = 4):
+    """Gemini generate_content with backoff on transient overload.
+
+    Gemini flash models intermittently return 503 UNAVAILABLE ("high demand") or
+    429 RESOURCE_EXHAUSTED. The google-genai client's built-in retry is short, so
+    a single spike was surfacing as a failed care-home search (an error envelope
+    the LLM relays as "technical issue") or a failed chat turn (a 500). These
+    calls are read-only regenerations, so re-issuing them is safe.
+    """
+    delay = 1.0
+    for attempt in range(attempts):
+        try:
+            return gemini_client.models.generate_content(
+                model=model, contents=contents, config=config
+            )
+        except genai_errors.APIError as e:
+            msg = str(e)
+            code = getattr(e, "code", None)
+            transient = (
+                code in (429, 500, 503)
+                or "UNAVAILABLE" in msg
+                or "RESOURCE_EXHAUSTED" in msg
+                or "high demand" in msg
+                or "overloaded" in msg
+                or "INTERNAL" in msg
+            )
+            if transient and attempt < attempts - 1:
+                print(
+                    f"[gemini] transient error (attempt {attempt + 1}/{attempts}), "
+                    f"retrying in {delay:.0f}s: {msg[:120]}"
+                )
+                time.sleep(delay)
+                delay = min(delay * 2, 8.0)
+                continue
+            raise
+
+
 def _grounded_search(prompt: str, *, response_schema: Optional[dict] = None) -> str:
     """
     One Google-Search-grounded SEARCH_MODEL call → response text.
@@ -257,9 +295,22 @@ def _grounded_search(prompt: str, *, response_schema: Optional[dict] = None) -> 
         response_mime_type="application/json" if response_schema else None,
         response_schema=response_schema,
     )
-    response = gemini_client.models.generate_content(
-        model=SEARCH_MODEL, contents=prompt, config=config
-    )
+    try:
+        response = _generate_content_resilient(
+            model=SEARCH_MODEL, contents=prompt, config=config
+        )
+    except genai_errors.APIError as e:
+        # If the lite search model is unavailable (e.g. a retired/renamed id),
+        # fall back to the brain model — it's a current Gemini 3 model and also
+        # supports grounded search, so a lookup still returns rather than
+        # dead-ending as "technical issue".
+        print(
+            f"[gemini] SEARCH_MODEL '{SEARCH_MODEL}' failed ({str(e)[:80]}); "
+            f"falling back to {BRAIN_MODEL}"
+        )
+        response = _generate_content_resilient(
+            model=BRAIN_MODEL, contents=prompt, config=config
+        )
     return (response.text or "").strip()
 
 
@@ -4242,7 +4293,7 @@ def chat(user_message: str, user_id: str) -> str:
 
     contents = _history_to_gemini_contents(_trim_history(history))
 
-    response = gemini_client.models.generate_content(
+    response = _generate_content_resilient(
         model=BRAIN_MODEL, contents=contents, config=_brain_config(allow_tools=True)
     )
 
@@ -4287,7 +4338,7 @@ def chat(user_message: str, user_id: str) -> str:
                 )
             )
 
-        follow_up = gemini_client.models.generate_content(
+        follow_up = _generate_content_resilient(
             model=BRAIN_MODEL,
             contents=contents
             + [model_content, genai_types.Content(role="user", parts=response_parts)],

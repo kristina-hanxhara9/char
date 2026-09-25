@@ -3,9 +3,9 @@ import { userStorage } from "@/lib/storage";
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-// Wrap fetch so a NETWORK failure (Render cold-start / offline) surfaces one
-// friendly message instead of the browser's raw "Failed to fetch" — every caller
-// below inherits it. HTTP errors are still handled per-call via res.ok.
+// Wrap fetch so a NETWORK failure (a transient blip / lost connection) surfaces
+// one friendly message instead of the browser's raw "Failed to fetch" — every
+// caller below inherits it. HTTP errors are still handled per-call via res.ok.
 async function apiFetch(
   input: RequestInfo | URL,
   init?: RequestInit
@@ -14,7 +14,7 @@ async function apiFetch(
     return await globalThis.fetch(input, init);
   } catch {
     const err = new Error(
-      "We couldn't reach YOPEY — the server may be waking up. Please try again in a few seconds."
+      "We couldn't reach YOPEY just now — please check your connection and try again in a moment."
     ) as Error & { status?: number };
     err.status = 0; // 0 = network/transport failure (no HTTP response)
     throw err;
@@ -245,24 +245,43 @@ export async function sendMessage(
   // fires) so the backend can confirm this is a registered YB, not an
   // anonymous bot. The chat endpoint rejects calls without it.
   const token = userStorage.get()?.user_token || "";
-  const res = await apiFetch(`${API_URL}/api/chat`, {
+  const init: RequestInit = {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...(token ? { "X-User-Token": token } : {}),
     },
     body: JSON.stringify({ user_id, message }),
-  });
-  if (!res.ok) {
-    const detail = await res.json().catch(() => ({}));
-    const err = new Error(detail.detail || `Chat failed (${res.status})`) as Error & {
-      status?: number;
-    };
-    err.status = res.status;
-    throw err;
+  };
+  // Retry ONLY on a network failure (no HTTP response reached us) — e.g. a
+  // momentary blip or the backend restarting during a deploy. A network reject
+  // means the request didn't complete, so re-sending is safe; HTTP errors
+  // (4xx/5xx) came back deliberately and are never retried.
+  let networkErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let res: Response;
+    try {
+      res = await apiFetch(`${API_URL}/api/chat`, init);
+    } catch (e) {
+      networkErr = e;
+      if (attempt < 2) {
+        await new Promise((r) => setTimeout(r, 3000 * (attempt + 1)));
+        continue; // wait and retry — rides out a brief blip
+      }
+      throw e;
+    }
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      const err = new Error(detail.detail || `Chat failed (${res.status})`) as Error & {
+        status?: number;
+      };
+      err.status = res.status;
+      throw err;
+    }
+    const data = await res.json();
+    return data.reply as string;
   }
-  const data = await res.json();
-  return data.reply as string;
+  throw networkErr;
 }
 
 export type GuideMessage = { role: "user" | "assistant"; content: string };

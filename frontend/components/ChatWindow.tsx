@@ -8,7 +8,7 @@ import TypingIndicator from "@/components/TypingIndicator";
 import ChatInput from "@/components/ChatInput";
 import HelpResources from "@/components/HelpResources";
 import YbMark from "@/components/YbMark";
-import { consumeInitialChat, fetchUser, sendMessage } from "@/lib/api";
+import { consumeInitialChat, fetchUser, pingBackend, sendMessage } from "@/lib/api";
 import { userStorage, type StoredUser } from "@/lib/storage";
 import { useIsEmbedded } from "@/lib/embed";
 
@@ -121,6 +121,10 @@ export default function ChatWindow() {
   useEffect(() => {
     if (initFiredRef.current) return;
     initFiredRef.current = true;
+
+    // Nudge the backend awake/connected the moment the chat opens, so the first
+    // real request (often the care-home search) isn't the one that eats a blip.
+    pingBackend();
 
     const stored = userStorage.get();
     if (!stored) {

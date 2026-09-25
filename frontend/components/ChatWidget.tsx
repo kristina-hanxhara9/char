@@ -27,11 +27,11 @@ export default function ChatWidget() {
         <button
           type="button"
           onClick={openPanel}
-          aria-label="Find a care home"
+          aria-label="Use YOPEY's AI to find a care home, get befriending advice, or write better reports"
           style={{ bottom: "max(1.25rem, env(safe-area-inset-bottom))" }}
-          className="fixed right-5 z-[2147483000] flex items-center gap-2 rounded-full bg-yopey-accent text-yopey-ink font-semibold px-5 py-3.5 shadow-lg hover:-translate-y-0.5 transition active:scale-95"
+          className="fixed right-5 z-[2147483000] flex items-center sm:items-start gap-2.5 rounded-full sm:rounded-2xl bg-yopey-accent text-yopey-ink font-semibold px-4 py-3.5 shadow-lg hover:-translate-y-0.5 transition active:scale-95 sm:max-w-[264px] text-left"
         >
-          <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5 shrink-0" aria-hidden="true">
             <path
               d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8A8.38 8.38 0 0 1 12.5 3 8.38 8.38 0 0 1 21 11.5z"
               stroke="currentColor"
@@ -40,7 +40,12 @@ export default function ChatWidget() {
               strokeLinejoin="round"
             />
           </svg>
-          <span className="hidden sm:inline">Find a care home</span>
+          <span className="hidden sm:flex sm:flex-col leading-snug">
+            <span className="font-extrabold">Use YOPEY&apos;s AI to</span>
+            <span className="font-medium">• Find a care home to visit</span>
+            <span className="font-medium">• Get befriending advice</span>
+            <span className="font-medium">• Write better reports</span>
+          </span>
         </button>
       )}
 

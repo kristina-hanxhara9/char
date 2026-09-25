@@ -264,10 +264,13 @@ def _generate_content_resilient(*, model, contents, config, attempts: int = 3):
         except genai_errors.APIError as e:
             msg = str(e)
             code = getattr(e, "code", None)
+            # Retry ONLY genuine transient server overload (Google's own capacity).
+            # A 429 RESOURCE_EXHAUSTED is a quota/billing limit on the key — retrying
+            # is futile AND burns more of the (already-exhausted) quota, so let it
+            # fail fast; the endpoint then returns a friendly "busy" message.
             transient = (
-                code in (429, 500, 503)
+                code in (500, 503)
                 or "UNAVAILABLE" in msg
-                or "RESOURCE_EXHAUSTED" in msg
                 or "high demand" in msg
                 or "overloaded" in msg
                 or "INTERNAL" in msg

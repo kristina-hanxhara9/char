@@ -623,9 +623,13 @@ def _admin_districts_within_radius(lat: float, lon: float, radius_miles: float) 
             for entry in data.get("result", []) or []:
                 matches = (entry or {}).get("result") or []
                 if matches:
-                    ad = matches[0].get("admin_district")
-                    if ad and ad not in districts:
-                        districts.append(ad)
+                    # Collect BOTH district and county (CQC uses the county for
+                    # two-tier areas, the district for unitary ones) so a search
+                    # near a county border includes the neighbouring county too.
+                    for key in ("admin_district", "admin_county"):
+                        name = matches[0].get(key)
+                        if name and name not in districts:
+                            districts.append(name)
     except Exception as e:
         print(f"[geocode] neighbouring-authority discovery failed: {e}")
 
@@ -703,9 +707,14 @@ def _fetch_cqc_care_homes(location: dict, max_radius: float = 10) -> list | dict
     # authority whose area falls within the search disc. Always include the
     # origin's own district so a discovery failure is never worse than before.
     districts: list[str] = []
-    origin_district = location.get("admin_district")
-    if origin_district:
-        districts.append(origin_district)
+    # CQC files a care home under its CASSR (council with adult social-services
+    # responsibility): the COUNTY for two-tier shire areas (e.g. "Essex" for
+    # Colchester, "Norfolk" for King's Lynn), or the district itself for
+    # unitary / London authorities. Query BOTH so two-tier areas (most of
+    # England) aren't silently missed. admin_county is null for unitary areas.
+    for name in (location.get("admin_district"), location.get("admin_county")):
+        if name and name not in districts:
+            districts.append(name)
     for ad in _admin_districts_within_radius(user_lat, user_lng, max_radius):
         if ad not in districts:
             districts.append(ad)
@@ -765,6 +774,9 @@ def _fetch_cqc_care_homes(location: dict, max_radius: float = 10) -> list | dict
             page += 1
 
     if not loc_ids:
+        # Log the exact authority strings we queried so a future coverage gap is
+        # visible (this is how the district-vs-county mismatch went unnoticed).
+        print(f"[cqc] no homes for authorities queried: {districts}")
         return {"error": "CQC returned no care homes for these authorities", "results": []}
 
     def _detail(loc_id: str) -> Optional[dict]:

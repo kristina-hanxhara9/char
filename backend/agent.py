@@ -264,12 +264,16 @@ def _generate_content_resilient(*, model, contents, config, attempts: int = 3):
         except genai_errors.APIError as e:
             msg = str(e)
             code = getattr(e, "code", None)
-            # Retry ONLY genuine transient server overload (Google's own capacity).
-            # A 429 RESOURCE_EXHAUSTED is a quota/billing limit on the key — retrying
-            # is futile AND burns more of the (already-exhausted) quota, so let it
-            # fail fast; the endpoint then returns a friendly "busy" message.
+            # Retry genuine transient failures: server overload (503 UNAVAILABLE /
+            # 500 INTERNAL — Google's own capacity) AND 429 RESOURCE_EXHAUSTED. Now
+            # that the key is on the PAID tier, a 429 is almost always a brief
+            # per-MINUTE rate-limit spike that clears on a short retry, not the old
+            # free-tier daily wall — so riding it out beats failing straight to the
+            # "busy" message. The capped backoff below still fails fast (a few
+            # seconds) if it's a genuine hard limit (e.g. billing not yet propagated).
             transient = (
-                code in (500, 503)
+                code in (429, 500, 503)
+                or "RESOURCE_EXHAUSTED" in msg
                 or "UNAVAILABLE" in msg
                 or "high demand" in msg
                 or "overloaded" in msg
@@ -5593,7 +5597,11 @@ def chat_endpoint(
         # and carries the Access-Control-Allow-Origin header, so the widget shows
         # a friendly message instead of an endless spinner. (A raw 500 is rendered
         # OUTSIDE the CORS middleware, so the browser blocks it as a CORS error.)
-        print(f"[chat] Gemini error for user {redact_id(req.user_id)}: {str(e)[:150]}")
+        print(
+            f"[chat] Gemini error for user {redact_id(req.user_id)}: "
+            f"code={getattr(e, 'code', None)} status={getattr(e, 'status', None)} "
+            f"{str(e)[:150]}"
+        )
         reply = (
             "Sorry — I'm very busy right now and couldn't finish that. "
             "Please try again in a few seconds."
@@ -5823,8 +5831,8 @@ def _guide_assistant_answer(question: str, history: list["GuideMessage"]) -> str
         "Answer (about the guide only):"
     )
     try:
-        response = gemini_client.models.generate_content(
-            model=SEARCH_MODEL, contents=prompt
+        response = _generate_content_resilient(
+            model=SEARCH_MODEL, contents=prompt, config=None
         )
         return (response.text or "").strip() or (
             "I'm not sure — try rephrasing, or read the relevant section above."

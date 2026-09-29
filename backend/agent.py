@@ -264,16 +264,16 @@ def _generate_content_resilient(*, model, contents, config, attempts: int = 3):
         except genai_errors.APIError as e:
             msg = str(e)
             code = getattr(e, "code", None)
-            # Retry genuine transient failures: server overload (503 UNAVAILABLE /
-            # 500 INTERNAL — Google's own capacity) AND 429 RESOURCE_EXHAUSTED. Now
-            # that the key is on the PAID tier, a 429 is almost always a brief
-            # per-MINUTE rate-limit spike that clears on a short retry, not the old
-            # free-tier daily wall — so riding it out beats failing straight to the
-            # "busy" message. The capped backoff below still fails fast (a few
-            # seconds) if it's a genuine hard limit (e.g. billing not yet propagated).
+            # Retry ONLY genuine transient server overload (Google's own capacity):
+            # 503 UNAVAILABLE / 500 INTERNAL / "high demand" / "overloaded". A 429
+            # RESOURCE_EXHAUSTED is a QUOTA limit on the key's Google Cloud project
+            # (e.g. the project is still on the Free tier, or billing/credit is on a
+            # DIFFERENT project than the key) — that is persistent, so retrying only
+            # adds latency before the identical failure. Let a 429 fail fast: the
+            # endpoint returns the friendly "busy" message immediately, and the
+            # status code logged there points at the real (account-side) cause.
             transient = (
-                code in (429, 500, 503)
-                or "RESOURCE_EXHAUSTED" in msg
+                code in (500, 503)
                 or "UNAVAILABLE" in msg
                 or "high demand" in msg
                 or "overloaded" in msg
@@ -307,12 +307,24 @@ def _grounded_search(prompt: str, *, response_schema: Optional[dict] = None) -> 
             model=SEARCH_MODEL, contents=prompt, config=config
         )
     except genai_errors.APIError as e:
-        # If the lite search model is unavailable (e.g. a retired/renamed id),
-        # fall back to the brain model — it's a current Gemini 3 model and also
-        # supports grounded search, so a lookup still returns rather than
-        # dead-ending as "technical issue".
+        # Fall back to the brain model ONLY when the search model itself is
+        # unavailable (a retired/renamed id → 404 NOT_FOUND); the brain model is a
+        # current Gemini 3 model that also supports grounded search, so the lookup
+        # still returns. For a quota (429) or overload (503) error the brain model
+        # shares the SAME project quota, so a second call is futile and just doubles
+        # the latency — re-raise and let the caller show its error envelope.
+        code = getattr(e, "code", None)
+        msg = str(e)
+        model_unavailable = (
+            code == 404
+            or "NOT_FOUND" in msg
+            or "not found" in msg
+            or "is not supported" in msg
+        )
+        if not model_unavailable:
+            raise
         print(
-            f"[gemini] SEARCH_MODEL '{SEARCH_MODEL}' failed ({str(e)[:80]}); "
+            f"[gemini] SEARCH_MODEL '{SEARCH_MODEL}' unavailable ({msg[:80]}); "
             f"falling back to {BRAIN_MODEL}"
         )
         response = _generate_content_resilient(

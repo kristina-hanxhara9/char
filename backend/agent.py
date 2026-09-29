@@ -15,6 +15,7 @@ import json
 import math
 import os
 import re
+import random
 import secrets
 import socket
 import sys
@@ -246,14 +247,17 @@ MAX_LLM_HISTORY = 40  # 20 user/assistant turns
 GOOGLE_SEARCH_TOOL = genai_types.Tool(google_search=genai_types.GoogleSearch())
 
 
-def _generate_content_resilient(*, model, contents, config, attempts: int = 3):
-    """Gemini generate_content with backoff on transient overload.
+def _generate_content_resilient(*, model, contents, config, attempts: int = 4):
+    """Gemini generate_content with exponential backoff on transient overload.
 
-    Gemini flash models intermittently return 503 UNAVAILABLE ("high demand") or
-    429 RESOURCE_EXHAUSTED. The google-genai client's built-in retry is short, so
-    a single spike was surfacing as a failed care-home search (an error envelope
-    the LLM relays as "technical issue") or a failed chat turn (a 500). These
-    calls are read-only regenerations, so re-issuing them is safe.
+    Gemini's flash models intermittently return 503 UNAVAILABLE ("high demand")
+    — Google-side serving capacity, NOT our quota — and these spikes can last
+    several seconds (a known, recurring Google incident). The client's built-in
+    retry is short, so without this a spike surfaces as a failed care-home search
+    or a "busy" chat reply. We ride the spike out with a few attempts and growing
+    backoff (+ jitter); callers that most need to succeed (the chat brain) pass a
+    higher `attempts`. These calls are read-only regenerations, so re-issuing is
+    safe. A 429 (quota/billing) is deliberately NOT transient — see below.
     """
     delay = 1.0
     for attempt in range(attempts):
@@ -264,10 +268,14 @@ def _generate_content_resilient(*, model, contents, config, attempts: int = 3):
         except genai_errors.APIError as e:
             msg = str(e)
             code = getattr(e, "code", None)
-            # Retry ONLY genuine transient server overload (Google's own capacity).
-            # A 429 RESOURCE_EXHAUSTED is a quota/billing limit on the key — retrying
-            # is futile AND burns more of the (already-exhausted) quota, so let it
-            # fail fast; the endpoint then returns a friendly "busy" message.
+            # Retry ONLY genuine transient server overload (Google's own capacity):
+            # 503 UNAVAILABLE / 500 INTERNAL / "high demand" / "overloaded". A 429
+            # RESOURCE_EXHAUSTED is a QUOTA limit on the key's Google Cloud project
+            # (e.g. the project is still on the Free tier, or billing/credit is on a
+            # DIFFERENT project than the key) — that is persistent, so retrying only
+            # adds latency before the identical failure. Let a 429 fail fast: the
+            # endpoint returns the friendly "busy" message immediately, and the
+            # status code logged there points at the real (account-side) cause.
             transient = (
                 code in (500, 503)
                 or "UNAVAILABLE" in msg
@@ -276,13 +284,14 @@ def _generate_content_resilient(*, model, contents, config, attempts: int = 3):
                 or "INTERNAL" in msg
             )
             if transient and attempt < attempts - 1:
+                sleep_s = delay + random.uniform(0, 0.4)  # jitter: avoid synced retries
                 print(
                     f"[gemini] transient error (attempt {attempt + 1}/{attempts}), "
-                    f"retrying in {delay:.0f}s: {msg[:120]}"
+                    f"retrying in {sleep_s:.1f}s: {msg[:120]}"
                 )
-                time.sleep(delay)
-                delay = min(delay * 2, 2.0)  # keep total wait small so a persistent
-                continue                      # failure fails fast instead of hanging
+                time.sleep(sleep_s)
+                delay = min(delay * 2, 6.0)  # grow the ride-out window (~1,2,4,6s) to
+                continue                     # outlast a multi-second 503 "high demand"
             raise
 
 
@@ -303,12 +312,24 @@ def _grounded_search(prompt: str, *, response_schema: Optional[dict] = None) -> 
             model=SEARCH_MODEL, contents=prompt, config=config
         )
     except genai_errors.APIError as e:
-        # If the lite search model is unavailable (e.g. a retired/renamed id),
-        # fall back to the brain model — it's a current Gemini 3 model and also
-        # supports grounded search, so a lookup still returns rather than
-        # dead-ending as "technical issue".
+        # Fall back to the brain model ONLY when the search model itself is
+        # unavailable (a retired/renamed id → 404 NOT_FOUND); the brain model is a
+        # current Gemini 3 model that also supports grounded search, so the lookup
+        # still returns. For a quota (429) or overload (503) error the brain model
+        # shares the SAME project quota, so a second call is futile and just doubles
+        # the latency — re-raise and let the caller show its error envelope.
+        code = getattr(e, "code", None)
+        msg = str(e)
+        model_unavailable = (
+            code == 404
+            or "NOT_FOUND" in msg
+            or "not found" in msg
+            or "is not supported" in msg
+        )
+        if not model_unavailable:
+            raise
         print(
-            f"[gemini] SEARCH_MODEL '{SEARCH_MODEL}' failed ({str(e)[:80]}); "
+            f"[gemini] SEARCH_MODEL '{SEARCH_MODEL}' unavailable ({msg[:80]}); "
             f"falling back to {BRAIN_MODEL}"
         )
         response = _generate_content_resilient(
@@ -4309,7 +4330,10 @@ def chat(user_message: str, user_id: str) -> str:
     contents = _history_to_gemini_contents(_trim_history(history))
 
     response = _generate_content_resilient(
-        model=BRAIN_MODEL, contents=contents, config=_brain_config(allow_tools=True)
+        model=BRAIN_MODEL,
+        contents=contents,
+        config=_brain_config(allow_tools=True),
+        attempts=5,  # user-facing chat: ride out a 503 "high demand" spike longer (~13s)
     )
 
     function_calls = response.function_calls or []
@@ -4358,6 +4382,7 @@ def chat(user_message: str, user_id: str) -> str:
             contents=contents
             + [model_content, genai_types.Content(role="user", parts=response_parts)],
             config=_brain_config(allow_tools=False),
+            attempts=5,  # match the initial brain call's ride-out window
         )
         assistant_reply = _visible_text(follow_up)
         if not assistant_reply:
@@ -5593,7 +5618,11 @@ def chat_endpoint(
         # and carries the Access-Control-Allow-Origin header, so the widget shows
         # a friendly message instead of an endless spinner. (A raw 500 is rendered
         # OUTSIDE the CORS middleware, so the browser blocks it as a CORS error.)
-        print(f"[chat] Gemini error for user {redact_id(req.user_id)}: {str(e)[:150]}")
+        print(
+            f"[chat] Gemini error for user {redact_id(req.user_id)}: "
+            f"code={getattr(e, 'code', None)} status={getattr(e, 'status', None)} "
+            f"{str(e)[:150]}"
+        )
         reply = (
             "Sorry — I'm very busy right now and couldn't finish that. "
             "Please try again in a few seconds."
@@ -5823,8 +5852,8 @@ def _guide_assistant_answer(question: str, history: list["GuideMessage"]) -> str
         "Answer (about the guide only):"
     )
     try:
-        response = gemini_client.models.generate_content(
-            model=SEARCH_MODEL, contents=prompt
+        response = _generate_content_resilient(
+            model=SEARCH_MODEL, contents=prompt, config=None
         )
         return (response.text or "").strip() or (
             "I'm not sure — try rephrasing, or read the relevant section above."

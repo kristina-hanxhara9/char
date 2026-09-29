@@ -15,6 +15,7 @@ import json
 import math
 import os
 import re
+import random
 import secrets
 import socket
 import sys
@@ -246,14 +247,17 @@ MAX_LLM_HISTORY = 40  # 20 user/assistant turns
 GOOGLE_SEARCH_TOOL = genai_types.Tool(google_search=genai_types.GoogleSearch())
 
 
-def _generate_content_resilient(*, model, contents, config, attempts: int = 3):
-    """Gemini generate_content with backoff on transient overload.
+def _generate_content_resilient(*, model, contents, config, attempts: int = 4):
+    """Gemini generate_content with exponential backoff on transient overload.
 
-    Gemini flash models intermittently return 503 UNAVAILABLE ("high demand") or
-    429 RESOURCE_EXHAUSTED. The google-genai client's built-in retry is short, so
-    a single spike was surfacing as a failed care-home search (an error envelope
-    the LLM relays as "technical issue") or a failed chat turn (a 500). These
-    calls are read-only regenerations, so re-issuing them is safe.
+    Gemini's flash models intermittently return 503 UNAVAILABLE ("high demand")
+    — Google-side serving capacity, NOT our quota — and these spikes can last
+    several seconds (a known, recurring Google incident). The client's built-in
+    retry is short, so without this a spike surfaces as a failed care-home search
+    or a "busy" chat reply. We ride the spike out with a few attempts and growing
+    backoff (+ jitter); callers that most need to succeed (the chat brain) pass a
+    higher `attempts`. These calls are read-only regenerations, so re-issuing is
+    safe. A 429 (quota/billing) is deliberately NOT transient — see below.
     """
     delay = 1.0
     for attempt in range(attempts):
@@ -280,13 +284,14 @@ def _generate_content_resilient(*, model, contents, config, attempts: int = 3):
                 or "INTERNAL" in msg
             )
             if transient and attempt < attempts - 1:
+                sleep_s = delay + random.uniform(0, 0.4)  # jitter: avoid synced retries
                 print(
                     f"[gemini] transient error (attempt {attempt + 1}/{attempts}), "
-                    f"retrying in {delay:.0f}s: {msg[:120]}"
+                    f"retrying in {sleep_s:.1f}s: {msg[:120]}"
                 )
-                time.sleep(delay)
-                delay = min(delay * 2, 2.0)  # keep total wait small so a persistent
-                continue                      # failure fails fast instead of hanging
+                time.sleep(sleep_s)
+                delay = min(delay * 2, 6.0)  # grow the ride-out window (~1,2,4,6s) to
+                continue                     # outlast a multi-second 503 "high demand"
             raise
 
 
@@ -4325,7 +4330,10 @@ def chat(user_message: str, user_id: str) -> str:
     contents = _history_to_gemini_contents(_trim_history(history))
 
     response = _generate_content_resilient(
-        model=BRAIN_MODEL, contents=contents, config=_brain_config(allow_tools=True)
+        model=BRAIN_MODEL,
+        contents=contents,
+        config=_brain_config(allow_tools=True),
+        attempts=5,  # user-facing chat: ride out a 503 "high demand" spike longer (~13s)
     )
 
     function_calls = response.function_calls or []
@@ -4374,6 +4382,7 @@ def chat(user_message: str, user_id: str) -> str:
             contents=contents
             + [model_content, genai_types.Content(role="user", parts=response_parts)],
             config=_brain_config(allow_tools=False),
+            attempts=5,  # match the initial brain call's ride-out window
         )
         assistant_reply = _visible_text(follow_up)
         if not assistant_reply:

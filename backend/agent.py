@@ -1267,7 +1267,10 @@ def _origin_key(origin_lat: Optional[float], origin_lng: Optional[float]) -> str
 # time, and carehome.co.uk manager cross-check — all change the payload.
 # v6: filter out deregistered/archived CQC homes + reject placeholder emails —
 # old cached rows may still list closed homes or fake addresses, so refresh.
-SEARCH_CACHE_VERSION = 6
+# v7: reliable CQC detail fetch (retry throttled 429s + higher candidate cap) —
+# earlier rows may be MISSING nearby homes whose detail call was rate-limited and
+# silently dropped (the Chelmsford gap), so refresh every cached search.
+SEARCH_CACHE_VERSION = 7
 
 
 def _check_search_cache(

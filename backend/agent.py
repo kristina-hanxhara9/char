@@ -814,26 +814,48 @@ def _fetch_cqc_care_homes(location: dict, max_radius: float = 10) -> list | dict
         return {"error": "CQC returned no care homes for these authorities", "results": []}
 
     def _detail(loc_id: str) -> Optional[dict]:
-        try:
-            r = requests.get(
-                f"https://api.service.cqc.org.uk/public/v1/locations/{loc_id}",
-                params=common_params or None,
-                headers=headers,
-                timeout=10,
-            )
-            return r.json() if r.status_code == 200 else None
-        except Exception:
-            return None
+        # Retry transient CQC failures (429 rate-limit / 5xx) with short backoff.
+        # A burst of parallel detail calls can trip CQC's rate limit, and a bare
+        # miss here silently DROPS a care home from results — the Chelmsford gap,
+        # where real nearby homes (Ayletts House, Madelayne Court, The Lawns)
+        # vanished because their detail call was throttled while a neighbour's
+        # succeeded.
+        delay = 0.5
+        for attempt in range(4):
+            try:
+                r = requests.get(
+                    f"https://api.service.cqc.org.uk/public/v1/locations/{loc_id}",
+                    params=common_params or None,
+                    headers=headers,
+                    timeout=10,
+                )
+                if r.status_code == 200:
+                    return r.json()
+                if r.status_code in (429, 500, 502, 503) and attempt < 3:
+                    time.sleep(delay + random.uniform(0, 0.3))
+                    delay = min(delay * 2, 3.0)
+                    continue
+                return None
+            except Exception:
+                if attempt < 3:
+                    time.sleep(delay + random.uniform(0, 0.3))
+                    delay = min(delay * 2, 3.0)
+                    continue
+                return None
+        return None
 
     care_homes: list[dict] = []
     dropped_no_coords: list[str] = []  # homes CQC lists but with no ONSPD coords
     dropped_archived = 0               # homes filtered as deregistered/archived
+    detail_failed = 0                  # candidates whose detail fetch never succeeded
     # Detail EVERY candidate (no arbitrary slice) so the true nearest is never
-    # dropped before its distance is known. max_workers raised to keep the
-    # wider fetch's wall-clock reasonable.
-    with ThreadPoolExecutor(max_workers=16) as executor:
+    # dropped before its distance is known. Concurrency kept moderate (alongside
+    # the per-call retry above) so a big county's burst doesn't trip CQC's rate
+    # limit and silently drop homes.
+    with ThreadPoolExecutor(max_workers=10) as executor:
         for detail in executor.map(_detail, loc_ids):
             if not detail:
+                detail_failed += 1
                 continue
 
             # Skip homes that are no longer operational. CQC keeps DEREGISTERED
@@ -951,8 +973,8 @@ def _fetch_cqc_care_homes(location: dict, max_radius: float = 10) -> list | dict
 
     care_homes.sort(key=lambda x: x["distance_miles"])
     print(
-        f"[cqc] live={len(care_homes)} dropped_no_coords={len(dropped_no_coords)} "
-        f"dropped_archived={dropped_archived} "
+        f"[cqc] live={len(care_homes)} detail_failed={detail_failed} "
+        f"dropped_no_coords={len(dropped_no_coords)} dropped_archived={dropped_archived} "
         f"nearest={[(h['name'], h.get('postcode'), h['distance_miles']) for h in care_homes[:12]]}"
     )
     if dropped_no_coords:

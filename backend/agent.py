@@ -703,12 +703,15 @@ def _walking_matrix(
 
 
 # Safety ceiling on how many care-home detail records we fetch per search.
-# The CQC list endpoint returns IDs with NO coordinates, so we can't pre-filter
-# by distance — every candidate must be detailed to know its distance. 800
-# fully covers a school's own authority plus its neighbours within 10 miles
-# while staying bounded (was an unsafe arbitrary 150 that silently dropped the
-# nearest home when it happened to sit past index 150 in CQC's ordering).
-MAX_CANDIDATE_IDS = 800
+# We must detail every candidate to know its exact distance, so this bounds the
+# work. Raised to 1500 so a large two-tier county (e.g. Essex/Kent, which can
+# hold ~800-1200 homes) is fetched in FULL rather than truncated in CQC's
+# arbitrary, distance-blind list order — that truncation silently dropped homes
+# nearer than the ones returned (the Chelmsford case).
+# TODO(perf): the list endpoint returns each home's postalCode, so we could
+# pre-rank by postcode distance and detail only the nearest N instead of a whole
+# county — cutting both latency and this cap. Diagnostics below confirm the need.
+MAX_CANDIDATE_IDS = 1500
 
 
 def _fetch_cqc_care_homes(location: dict, max_radius: float = 10) -> list | dict:
@@ -752,6 +755,7 @@ def _fetch_cqc_care_homes(location: dict, max_radius: float = 10) -> list | dict
     # details are fetched in parallel below.
     loc_ids: list[str] = []
     seen_ids: set[str] = set()
+    authority_totals: dict[str, int] = {}  # CQC's reported total per authority (diagnostics)
     for local_authority in districts:
         if len(seen_ids) >= MAX_CANDIDATE_IDS:
             break
@@ -785,6 +789,10 @@ def _fetch_cqc_care_homes(location: dict, max_radius: float = 10) -> list | dict
                 break
 
             locations = data.get("locations", [])
+            if page == 1:
+                # CQC's total for this authority — reveals whether the cap below
+                # is truncating a big county (the Chelmsford/Essex coverage gap).
+                authority_totals[local_authority] = data.get("total", len(locations))
             if not locations:
                 break
             for loc in locations:
@@ -794,6 +802,11 @@ def _fetch_cqc_care_homes(location: dict, max_radius: float = 10) -> list | dict
                     loc_ids.append(loc_id)
             page += 1
 
+    cap_hit = len(seen_ids) >= MAX_CANDIDATE_IDS
+    print(
+        f"[cqc] authorities={districts} totals={authority_totals} "
+        f"collected={len(loc_ids)} cap_hit={cap_hit}"
+    )
     if not loc_ids:
         # Log the exact authority strings we queried so a future coverage gap is
         # visible (this is how the district-vs-county mismatch went unnoticed).
@@ -813,6 +826,8 @@ def _fetch_cqc_care_homes(location: dict, max_radius: float = 10) -> list | dict
             return None
 
     care_homes: list[dict] = []
+    dropped_no_coords: list[str] = []  # homes CQC lists but with no ONSPD coords
+    dropped_archived = 0               # homes filtered as deregistered/archived
     # Detail EVERY candidate (no arbitrary slice) so the true nearest is never
     # dropped before its distance is known. max_workers raised to keep the
     # wider fetch's wall-clock reasonable.
@@ -828,13 +843,16 @@ def _fetch_cqc_care_homes(location: dict, max_radius: float = 10) -> list | dict
             # archived profile). Only surface currently-registered care homes.
             reg_status = (detail.get("registrationStatus") or "").strip().lower()
             if reg_status and reg_status != "registered":
+                dropped_archived += 1
                 continue
             if detail.get("deregistrationDate"):
+                dropped_archived += 1
                 continue
 
             lat = detail.get("onspdLatitude")
             lng = detail.get("onspdLongitude")
             if not (lat and lng):
+                dropped_no_coords.append(detail.get("name", "?"))
                 continue
 
             distance = haversine_miles(user_lat, user_lng, lat, lng)
@@ -932,6 +950,13 @@ def _fetch_cqc_care_homes(location: dict, max_radius: float = 10) -> list | dict
             })
 
     care_homes.sort(key=lambda x: x["distance_miles"])
+    print(
+        f"[cqc] live={len(care_homes)} dropped_no_coords={len(dropped_no_coords)} "
+        f"dropped_archived={dropped_archived} "
+        f"nearest={[(h['name'], h.get('postcode'), h['distance_miles']) for h in care_homes[:12]]}"
+    )
+    if dropped_no_coords:
+        print(f"[cqc] excluded (no coords): {dropped_no_coords[:15]}")
     return care_homes
 
 

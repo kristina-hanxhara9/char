@@ -702,16 +702,57 @@ def _walking_matrix(
         return None
 
 
-# Safety ceiling on how many care-home detail records we fetch per search.
-# We must detail every candidate to know its exact distance, so this bounds the
-# work. Raised to 1500 so a large two-tier county (e.g. Essex/Kent, which can
-# hold ~800-1200 homes) is fetched in FULL rather than truncated in CQC's
-# arbitrary, distance-blind list order — that truncation silently dropped homes
-# nearer than the ones returned (the Chelmsford case).
-# TODO(perf): the list endpoint returns each home's postalCode, so we could
-# pre-rank by postcode distance and detail only the nearest N instead of a whole
-# county — cutting both latency and this cap. Diagnostics below confirm the need.
+# Ceiling on how many candidate IDs we COLLECT from the (cheap) CQC list pages.
+# The list returns ids + postcodes only, so collecting a whole county is fast;
+# the expensive per-home detail fetch is then limited to DETAIL_LIMIT below.
 MAX_CANDIDATE_IDS = 1500
+
+# How many of the NEAREST candidates (ranked by postcode-centroid distance) we
+# fetch full details for. The CQC list has no coordinates but DOES carry each
+# home's postcode, so we bulk-geocode those cheaply, rank by distance, and detail
+# only the closest DETAIL_LIMIT — instead of the whole county (hundreds-1500
+# detail calls ≈ the 60-150s latency/timeout). 60 is far more than the ~5 shown
+# and the ≤15 walking shortlist, so the true nearest are always detailed.
+DETAIL_LIMIT = 60
+
+
+def _bulk_postcode_coords(postcodes: list[str]) -> dict[str, tuple[float, float]]:
+    """Bulk-geocode UK postcodes → {normalized_postcode: (lat, lng)} via
+    postcodes.io (100 per request, chunks run in parallel). Unresolved or invalid
+    postcodes are simply absent. Used to rank CQC candidates by distance BEFORE
+    the expensive per-home detail fetch, so we only detail the nearest ones."""
+    uniq = sorted({_normalize_postcode(p) for p in postcodes if p and p.strip()})
+    if not uniq:
+        return {}
+
+    def _chunk(batch: list[str]) -> dict[str, tuple[float, float]]:
+        try:
+            resp = requests.post(
+                "https://api.postcodes.io/postcodes",
+                json={"postcodes": batch},
+                timeout=10,
+            )
+            data = resp.json()
+            if data.get("status") != 200:
+                return {}
+            found: dict[str, tuple[float, float]] = {}
+            for entry in data.get("result", []) or []:
+                q = _normalize_postcode((entry or {}).get("query", ""))
+                r = (entry or {}).get("result") or {}
+                lat, lng = r.get("latitude"), r.get("longitude")
+                if q and lat is not None and lng is not None:
+                    found[q] = (lat, lng)
+            return found
+        except Exception as e:
+            print(f"[geocode] bulk postcode lookup failed: {e}")
+            return {}
+
+    batches = [uniq[i:i + 100] for i in range(0, len(uniq), 100)]
+    out: dict[str, tuple[float, float]] = {}
+    with ThreadPoolExecutor(max_workers=min(5, len(batches))) as ex:
+        for part in ex.map(_chunk, batches):
+            out.update(part)
+    return out
 
 
 def _fetch_cqc_care_homes(location: dict, max_radius: float = 10) -> list | dict:
@@ -750,10 +791,10 @@ def _fetch_cqc_care_homes(location: dict, max_radius: float = 10) -> list | dict
         {"partnerCode": CQC_PARTNER_CODE} if CQC_PARTNER_CODE else {}
     )
 
-    # Collect candidate IDs across every relevant authority, deduped by
-    # locationId. List pages are cheap (ids only); the expensive per-home
-    # details are fetched in parallel below.
-    loc_ids: list[str] = []
+    # Collect candidate (id, postcode) across every relevant authority, deduped
+    # by locationId. List pages are cheap (ids + postcodes only); we then rank by
+    # postcode distance and detail only the nearest few below.
+    candidates: list[tuple[str, str]] = []  # (locationId, postalCode)
     seen_ids: set[str] = set()
     authority_totals: dict[str, int] = {}  # CQC's reported total per authority (diagnostics)
     for local_authority in districts:
@@ -799,15 +840,15 @@ def _fetch_cqc_care_homes(location: dict, max_radius: float = 10) -> list | dict
                 loc_id = loc.get("locationId")
                 if loc_id and loc_id not in seen_ids:
                     seen_ids.add(loc_id)
-                    loc_ids.append(loc_id)
+                    candidates.append((loc_id, loc.get("postalCode") or ""))
             page += 1
 
     cap_hit = len(seen_ids) >= MAX_CANDIDATE_IDS
     print(
         f"[cqc] authorities={districts} totals={authority_totals} "
-        f"collected={len(loc_ids)} cap_hit={cap_hit}"
+        f"collected={len(candidates)} cap_hit={cap_hit}"
     )
-    if not loc_ids:
+    if not candidates:
         # Log the exact authority strings we queried so a future coverage gap is
         # visible (this is how the district-vs-county mismatch went unnoticed).
         print(f"[cqc] no homes for authorities queried: {districts}")
@@ -844,16 +885,36 @@ def _fetch_cqc_care_homes(location: dict, max_radius: float = 10) -> list | dict
                 return None
         return None
 
+    # Rank candidates by postcode-centroid distance BEFORE the expensive detail
+    # fetch, so we only pull full records for the NEAREST homes rather than the
+    # whole county (hundreds-1500 calls ≈ the 60-150s latency the user hit). The
+    # postcode centroid is accurate to ~0.1mi and DETAIL_LIMIT (60) far exceeds
+    # the ~5 shown + ≤15 walking shortlist, so the true nearest are always in the
+    # detailed set — the Chelmsford coverage fix is preserved, just fast.
+    pc_coords = _bulk_postcode_coords([pc for _, pc in candidates])
+
+    def _approx_dist(pc: str) -> float:
+        c = pc_coords.get(_normalize_postcode(pc)) if pc else None
+        return haversine_miles(user_lat, user_lng, c[0], c[1]) if c else float("inf")
+
+    if pc_coords:
+        candidates.sort(key=lambda cand: _approx_dist(cand[1]))
+    else:
+        # postcodes.io unavailable — keep CQC's list order (bounded by the cap) so
+        # behaviour never regresses to worse than before the pre-rank.
+        print("[cqc] postcode pre-rank unavailable; detailing in list order (fallback)")
+    detail_ids = [cid for cid, _ in candidates[:DETAIL_LIMIT]]
+    print(f"[cqc] candidates={len(candidates)} -> detailing nearest {len(detail_ids)}")
+
     care_homes: list[dict] = []
     dropped_no_coords: list[str] = []  # homes CQC lists but with no ONSPD coords
     dropped_archived = 0               # homes filtered as deregistered/archived
     detail_failed = 0                  # candidates whose detail fetch never succeeded
-    # Detail EVERY candidate (no arbitrary slice) so the true nearest is never
-    # dropped before its distance is known. Concurrency kept moderate (alongside
-    # the per-call retry above) so a big county's burst doesn't trip CQC's rate
-    # limit and silently drop homes.
+    # Detail only the nearest DETAIL_LIMIT candidates (see the pre-rank above).
+    # Concurrency kept moderate (alongside the per-call retry) so the burst
+    # doesn't trip CQC's rate limit and silently drop a home.
     with ThreadPoolExecutor(max_workers=10) as executor:
-        for detail in executor.map(_detail, loc_ids):
+        for detail in executor.map(_detail, detail_ids):
             if not detail:
                 detail_failed += 1
                 continue
@@ -1593,6 +1654,20 @@ def _strip_internal_fields(homes: list[dict]) -> None:
         h.pop("_lng", None)
 
 
+def _enrich_concurrent(homes: list[dict], fallback_postcode: str) -> None:
+    """Run the email + manager enrichment passes CONCURRENTLY. Each mutates a
+    DIFFERENT set of fields on the same home dicts, so parallel mutation is safe,
+    and running them together (instead of back-to-back) roughly halves the
+    per-home enrichment wall-clock on a cold search."""
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        futures = [
+            ex.submit(_enrich_with_emails, homes, fallback_postcode),
+            ex.submit(_enrich_with_managers, homes, fallback_postcode),
+        ]
+        for f in futures:
+            f.result()
+
+
 def _search_care_homes_uncached(
     postcode: str,
     radius_miles: int,
@@ -1660,8 +1735,7 @@ def _search_care_homes_uncached(
                     }
                     if step > radius_miles:
                         print(f"[search] auto-expanded {redact_postcode(postcode)} from {radius_miles}mi → {step}mi to find results")
-                    _enrich_with_emails(attempt["results"], postcode)
-                    _enrich_with_managers(attempt["results"], postcode)
+                    _enrich_concurrent(attempt["results"], postcode)
                     if not excluded:
                         _save_search_to_cache(postcode, radius_miles, max_results, attempt, origin_key)
                     return attempt
@@ -1702,8 +1776,7 @@ def _search_care_homes_uncached(
         # bot renders them with the weakest wording (never as walking data).
         for h in results:
             h.setdefault("distance_source", "straight_line_estimate")
-        _enrich_with_emails(results, postcode)
-        _enrich_with_managers(results, postcode)
+        _enrich_concurrent(results, postcode)
     else:
         attempt["actual_radius_miles"] = max_radius
     if not excluded:
@@ -3908,7 +3981,10 @@ def execute_tool(tool_name: str, args: dict, user_id: str, trigger_message: Opti
         )
         results = search_care_homes(
             postcode=searched_postcode,
-            radius_miles=args.get("radius_miles", 10),
+            # Default 1mi to match the tool declaration + the onboarding precompute
+            # (cache rows are keyed by radius, and the search auto-expands 1→2→3→
+            # 5→10 anyway) so the chat reuses the warm row instead of re-searching.
+            radius_miles=args.get("radius_miles", 1),
             max_results=args.get("max_results", 5),
             origin_lat=origin_lat,
             origin_lng=origin_lng,

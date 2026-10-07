@@ -3,7 +3,9 @@ services:
     name: yopey-backend
     runtime: python
     rootDir: backend
-    plan: free
+    # Live service runs on the Pro instance (no idle spin-down). Keep this in
+    # sync so a Blueprint apply can never silently downgrade it to free.
+    plan: pro
     region: frankfurt
     buildCommand: pip install -r requirements.txt
     startCommand: python agent.py

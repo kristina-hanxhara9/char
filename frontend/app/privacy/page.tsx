@@ -76,13 +76,6 @@ export default function PrivacyPage() {
             you&apos;d like care homes searched near (school or home).
           </li>
           <li>
-            <strong>Your survey answers</strong>: the 10 Dementia Attitudes
-            Scale answers you give in the sign-up wizard. YOPEY uses these to
-            compare your views before and after volunteering — to measure how
-            being a befriender changes you. We don&apos;t share individual
-            scores; only anonymous averages.
-          </li>
-          <li>
             <strong>From the chat</strong>: everything you type into the chatbot,
             plus what the bot replies (so we can keep context between sessions).
           </li>

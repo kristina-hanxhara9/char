@@ -37,7 +37,6 @@ Appropriate Design Code (Children's Code) applies in addition to UK GDPR.
 | Identity & contact | first name, surname, age, email, phone | onboarding form |
 | Location | postcode (home or school search anchor — never full address) | onboarding form |
 | Education | school/college name | onboarding form |
-| Research | 10-item Dementia Attitudes survey (Likert) | onboarding form |
 | Activity | care homes contacted, replies, reminder responses | chat / email clicks |
 | Chat content | full transcript of the young person's conversation | chat |
 | **Special category / safeguarding** | a young person's disclosure of self-harm, abuse, distress, or a care-home concern, recorded as a safeguarding alert + transcript | chat (model tool call or deterministic backstop) |
@@ -60,7 +59,7 @@ Appropriate Design Code (Children's Code) applies in addition to UK GDPR.
   details are **not** broadcast in the drafted care-home email — it is signed
   with their name only, and the care home is pointed to YOPEY to reply/verify.
 - **Purpose limitation:** each purpose is disclosed in the privacy notice
-  (`/privacy`, UK GDPR Art 13). Survey data is used only in anonymous aggregate.
+  (`/privacy`, UK GDPR Art 13).
 - **Automated processing:** the chatbot is a guidance tool. It makes no decision
   with legal/similarly-significant effect on the young person (no eligibility,
   no profiling). A human coordinator handles matching and acceptance.

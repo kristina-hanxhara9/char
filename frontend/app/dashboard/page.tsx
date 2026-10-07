@@ -9,38 +9,15 @@ import SafeguardingPanel from "@/components/dashboard/SafeguardingPanel";
 import { adminChangePassword, adminDeleteUser, adminMe, fetchDashboard, markReply } from "@/lib/api";
 import { dashTokenStorage } from "@/lib/storage";
 
-type Tab = "all" | "waiting" | "stuck" | "matched" | "surveys" | "safeguarding";
+type Tab = "all" | "waiting" | "stuck" | "matched" | "safeguarding";
 
 const TABS: { key: Tab; label: string; path: string }[] = [
   { key: "all", label: "All users", path: "users" },
   { key: "waiting", label: "Waiting for reply", path: "waiting" },
   { key: "stuck", label: "Stuck (7+ days, no contact)", path: "stuck" },
   { key: "matched", label: "Matched", path: "matched" },
-  { key: "surveys", label: "Surveys", path: "surveys" },
   { key: "safeguarding", label: "Safeguarding", path: "safeguarding" },
 ];
-
-const SURVEY_QUESTIONS = [
-  { key: "q1_afraid", short: "Q1: Afraid of ADRD" },
-  { key: "q2_confident", short: "Q2: Confident around" },
-  { key: "q3_comfortable_touching", short: "Q3: Comfortable touching" },
-  { key: "q4_uncomfortable", short: "Q4: Uncomfortable around" },
-  { key: "q5_different_needs", short: "Q5: Different needs" },
-  { key: "q6_past_history", short: "Q6: Past history matters" },
-  { key: "q7_relaxed", short: "Q7: Relaxed around" },
-  { key: "q8_feel_kindness", short: "Q8: Feel kindness" },
-  { key: "q9_frustrated", short: "Q9: Frustrated helping" },
-  { key: "q10_difficult_behaviour", short: "Q10: Difficult = communication" },
-];
-
-function scoreColor(score: number | null | undefined) {
-  if (score == null) return "bg-gray-100 text-gray-500";
-  if (score <= 2) return "bg-red-100 text-red-700";
-  if (score <= 3) return "bg-amber-100 text-amber-700";
-  if (score === 4) return "bg-gray-100 text-gray-700";
-  if (score <= 5) return "bg-blue-100 text-blue-700";
-  return "bg-green-100 text-green-700";
-}
 
 export default function DashboardPage() {
   const [token, setToken] = useState<string | null>(null);
@@ -48,7 +25,6 @@ export default function DashboardPage() {
   const [summary, setSummary] = useState<any>(null);
   const [tab, setTab] = useState<Tab>("all");
   const [rows, setRows] = useState<any[]>([]);
-  const [surveyStats, setSurveyStats] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyRow, setBusyRow] = useState<string | null>(null);
@@ -79,7 +55,7 @@ export default function DashboardPage() {
     }
   }
 
-  // Refresh rows + stats. For the Surveys tab also pull aggregate stats.
+  // Refresh the current tab's rows + the summary cards.
   const reloadCurrentTab = useCallback(async () => {
     if (!token) return;
     const t = TABS.find((x) => x.key === tab);
@@ -98,17 +74,12 @@ export default function DashboardPage() {
     setLoading(true);
     setError(null);
     try {
-      const promises: Promise<any>[] = [
+      const [data, s] = await Promise.all([
         fetchDashboard<any[]>(t.path, token),
         fetchDashboard("summary", token),
-      ];
-      if (tab === "surveys") {
-        promises.push(fetchDashboard("survey-stats", token));
-      }
-      const [data, s, stats] = await Promise.all(promises);
+      ]);
       setRows(data);
       setSummary(s);
-      if (tab === "surveys") setSurveyStats(stats);
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -133,7 +104,7 @@ export default function DashboardPage() {
     if (
       !confirm(
         `Permanently delete ${fullName} and ALL their data (chat history, ` +
-          `contacts, surveys, emails)? This can't be undone.`
+          `contacts, emails)? This can't be undone.`
       )
     ) {
       return;
@@ -275,30 +246,6 @@ export default function DashboardPage() {
         render: (r: any) => (r.contacted_at ? new Date(r.contacted_at).toLocaleDateString() : "—"),
       },
     ],
-    surveys: [
-      { key: "full_name", label: "Name" },
-      { key: "email", label: "Email" },
-      { key: "age", label: "Age" },
-      {
-        key: "completed_at",
-        label: "Completed",
-        render: (r: any) => (r.completed_at ? new Date(r.completed_at).toLocaleDateString() : "—"),
-      },
-      ...SURVEY_QUESTIONS.map((q, i) => ({
-        key: q.key,
-        label: `Q${i + 1}`,
-        render: (r: any) => (
-          <span
-            className={`inline-block min-w-[32px] text-center px-2 py-1 rounded-md text-xs font-semibold ${scoreColor(
-              r[q.key]
-            )}`}
-            title={q.short}
-          >
-            {r[q.key] ?? "—"}
-          </span>
-        ),
-      })),
-    ],
   };
 
   if (!token) return <DashboardLogin onAuth={handleAuth} />;
@@ -370,48 +317,6 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {tab === "surveys" && surveyStats && (
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 md:p-5">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="font-semibold text-gray-800">
-                Average score per question
-              </h3>
-              <span className="text-xs text-gray-500">
-                across {surveyStats.count} survey{surveyStats.count === 1 ? "" : "s"}
-              </span>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-              {SURVEY_QUESTIONS.map((q, i) => {
-                const avg = surveyStats.averages?.[q.key];
-                return (
-                  <div
-                    key={q.key}
-                    className="rounded-xl border border-gray-100 p-3"
-                    title={q.short}
-                  >
-                    <div className="text-xs text-gray-500">Q{i + 1}</div>
-                    <div
-                      className={`text-2xl font-extrabold mt-1 inline-block px-2 py-0.5 rounded-md ${scoreColor(
-                        avg
-                      )}`}
-                    >
-                      {avg ?? "—"}
-                    </div>
-                    <div className="text-[11px] text-gray-500 mt-1 leading-tight">
-                      {q.short.replace(/^Q\d+:\s*/, "")}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <p className="text-xs text-gray-500 mt-3">
-              Scale: 1 = Strongly Disagree · 4 = Neutral · 7 = Strongly Agree.
-              For questions 1, 4, 9 (negative phrasing) a LOWER average is more
-              positive; for the rest a HIGHER average is more positive.
-            </p>
-          </div>
-        )}
-
         {tab === "safeguarding" ? (
           <SafeguardingPanel token={token} />
         ) : loading ? (
@@ -421,11 +326,7 @@ export default function DashboardPage() {
             title={TABS.find((t) => t.key === tab)?.label || ""}
             columns={COLUMNS[tab as Exclude<Tab, "safeguarding">]}
             rows={rows}
-            emptyMessage={
-              tab === "surveys"
-                ? "No surveys completed yet — they'll appear here as teens finish the wizard."
-                : "No rows yet — they'll appear as young people use the chat."
-            }
+            emptyMessage="No rows yet — they'll appear as young people use the chat."
           />
         )}
       </section>

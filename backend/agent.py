@@ -2600,7 +2600,7 @@ def redact_school_name(name: Optional[str]) -> str:
 
 # ============================================================
 # Per-user HMAC token. Issued at /api/onboard, stored in browser localStorage,
-# sent as X-User-Token on /api/user/{id} GET+DELETE and /api/survey.
+# sent as X-User-Token on /api/user/{id} GET+DELETE.
 # Treats user_id as identifier (path) and token as credential (header) so an
 # attacker who scrapes a UUID alone can't impersonate the user.
 # ============================================================
@@ -4514,38 +4514,12 @@ class OnboardRequest(BaseModel):
 
 class QuickStartRequest(BaseModel):
     """Lightweight onboarding for the advice / visit-report routes, which don't
-    need a postcode or the survey — just enough to run the chat and keep a
-    safeguarding contact on file: name, age (the 16–24 gate) and email."""
+    need a postcode — just enough to run the chat and keep a safeguarding
+    contact on file: name, age (the 16–24 gate) and email."""
     first_name: str = Field(min_length=1, max_length=50)
     age: int = Field(ge=16, le=24, description="Must be aged 16–24")
     email: EmailStr
     utm_source: Optional[str] = None
-
-
-class SurveyRequest(BaseModel):
-    """
-    Dementia Attitudes Scale, 10 Likert questions (1=Strongly Disagree, 7=Strongly Agree).
-    """
-    user_id: str
-    survey_type: Literal["pre", "post"] = "pre"
-    q1_afraid: int = Field(ge=1, le=7)
-    q2_confident: int = Field(ge=1, le=7)
-    q3_comfortable_touching: int = Field(ge=1, le=7)
-    q4_uncomfortable: int = Field(ge=1, le=7)
-    q5_different_needs: int = Field(ge=1, le=7)
-    q6_past_history: int = Field(ge=1, le=7)
-    q7_relaxed: int = Field(ge=1, le=7)
-    q8_feel_kindness: int = Field(ge=1, le=7)
-    q9_frustrated: int = Field(ge=1, le=7)
-    q10_difficult_behaviour: int = Field(ge=1, le=7)
-
-
-# The 10 question fields, exported for response shape symmetry
-SURVEY_QUESTION_FIELDS = [
-    "q1_afraid", "q2_confident", "q3_comfortable_touching", "q4_uncomfortable",
-    "q5_different_needs", "q6_past_history", "q7_relaxed", "q8_feel_kindness",
-    "q9_frustrated", "q10_difficult_behaviour",
-]
 
 
 class OnboardResponse(BaseModel):
@@ -5084,14 +5058,13 @@ def delete_user_endpoint(user_id: str):
 
     counts: dict[str, int] = {}
     # ON DELETE CASCADE on the foreign keys handles contacts, conversations,
-    # training_progress, email_responses, survey_responses. We still tally what's
-    # about to go for the response body so the user has a receipt.
+    # training_progress, email_responses. We still tally what's about to go for
+    # the response body so the user has a receipt.
     for table in (
         "contacts",
         "conversations",
         "training_progress",
         "email_responses",
-        "survey_responses",
     ):
         try:
             res = supabase.table(table).select("id", count="exact").eq("user_id", user_id).execute()
@@ -5162,7 +5135,7 @@ def precompute_search_endpoint(
 ):
     """
     Warm the care_home_searches cache for a postcode while the teen is still
-    filling out the survey + consent steps. The frontend fires this after the
+    filling out the consent step. The frontend fires this after the
     Step-1 "Continue" press so the /chat auto-search hits a warm cache.
 
     Responds 202 immediately; the search runs as a background task after the
@@ -5520,7 +5493,7 @@ def return_exchange(req: ReturnExchangeRequest, request: Request):
 @limiter.limit("5/minute")
 def quick_start_endpoint(req: QuickStartRequest, request: Request):
     """Minimal onboarding for the 'ask for advice' / 'polish a visit report'
-    routes — no postcode, no survey. Creates a user from name + age + email so
+    routes — no postcode. Creates a user from name + age + email so
     the chat can run and any safeguarding alert can still reach the person."""
     _require_services()
     try:
@@ -5597,47 +5570,6 @@ def onboard_endpoint(req: OnboardRequest, request: Request):
         first_name=user["first_name"],
         postcode=user.get("postcode"),
     )
-
-
-@app.post("/api/survey")
-@limiter.limit("20/minute")
-def survey_endpoint(req: SurveyRequest, request: Request, x_user_token: str = Header(default="")):
-    """User-token gated. Anyone with the user_id alone can't poison the slot."""
-    if not verify_user_token(req.user_id, x_user_token):
-        raise HTTPException(status_code=401, detail="Missing or invalid user token")
-    """
-    Store a Dementia Attitudes Scale response. Called from the onboard wizard
-    AFTER /api/onboard, and (later, v1.1) at the end of a YB's journey for the
-    'post' survey.
-    """
-    _require_services()
-    # User must exist (the wizard will have just created them)
-    if not get_user(req.user_id):
-        raise HTTPException(status_code=404, detail="User not found")
-
-    payload: dict[str, Any] = {
-        "user_id": req.user_id,
-        "survey_type": req.survey_type,
-        **{q: getattr(req, q) for q in SURVEY_QUESTION_FIELDS},
-    }
-    try:
-        # Idempotent: re-submitting the same (user, type) silently no-ops
-        existing = (
-            supabase.table("survey_responses")
-            .select("id")
-            .eq("user_id", req.user_id)
-            .eq("survey_type", req.survey_type)
-            .limit(1)
-            .execute()
-        )
-        if existing.data:
-            return {"status": "already_submitted"}
-        supabase.table("survey_responses").insert(payload).execute()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Could not save survey: {e}")
-
-    print(f"[survey] {req.survey_type}-survey stored for user {redact_id(req.user_id)}")
-    return {"status": "saved"}
 
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -5747,8 +5679,7 @@ WHAT IT DOES NOT DO
 HOW TO ACCESS IT
 Open the YOPEY Befriender website and press "Find a care home". You need to be
 16 or over. You answer a few quick questions (first name, age, email, and your
-postcode or school), and a short survey about attitudes to dementia that takes a
-couple of minutes, then you start typing to the assistant. If you leave and come
+postcode or school), then you start typing to the assistant. If you leave and come
 back, you can pick up again through a link YOPEY emails you. It can also appear
 as a chat bubble on partner websites that have added it.
 
@@ -5777,9 +5708,8 @@ WHAT THIS AGENT DOES
 Purpose: it helps a young person find a local care home and DRAFTS a first
 introduction email that the young person then sends themselves, in minutes,
 instead of YOPEY doing this outreach by manual phone calls.
-It also: gates signups to age 16 and over, runs a short Dementia Attitudes
-survey at signup (to measure how volunteering changes attitudes), and can be
-embedded on partner websites as a floating chat bubble.
+It also: gates signups to age 16 and over, and can be embedded on partner
+websites as a floating chat bubble.
 WHAT IT DOES
 • Finds nearby care homes, with walking distance and time to each.
 • Drafts an introduction email in the young person's own name.
@@ -5815,7 +5745,7 @@ about once a month).
 
 HOW TO MONITOR IT
 • The coordinator dashboard at /dashboard shows signups, who is waiting for a
-  reply, who is stuck, matches, survey scores, and a Safeguarding panel. You can
+  reply, who is stuck, matches, and a Safeguarding panel. You can
   open each young person's full conversation log.
 • Signing in: each coordinator creates their own account at /dashboard using
   their own @yopey.org email and a password, confirmed once by a 6 digit code
@@ -5839,7 +5769,7 @@ HOW TO IMPROVE IT
 
 GOVERNANCE
 • Data it CAN access: the young person's onboarding details (name, age, email,
-  postcode or school), their chat, survey answers, visit reports, and their care
+  postcode or school), their chat, visit reports, and their care
   home activity.
 • Data it CANNOT access: anything outside this app. It does not browse the young
   person's device or accounts. The /guide helper specifically has NO access to
@@ -5982,25 +5912,6 @@ def dashboard_stuck():
 def dashboard_matched():
     res = supabase.table("dashboard_matched").select("*").limit(500).execute()
     return res.data
-
-
-@app.get("/api/dashboard/survey-stats", dependencies=[Depends(require_dashboard_auth)])
-def dashboard_survey_stats():
-    """Per-question average across all pre-volunteering surveys."""
-    res = supabase.table("survey_responses").select("*").eq("survey_type", "pre").execute()
-    rows = res.data or []
-    averages: dict[str, Optional[float]] = {}
-    for q in SURVEY_QUESTION_FIELDS:
-        vals = [r[q] for r in rows if r.get(q) is not None]
-        averages[q] = round(sum(vals) / len(vals), 2) if vals else None
-    return {"count": len(rows), "averages": averages}
-
-
-@app.get("/api/dashboard/surveys", dependencies=[Depends(require_dashboard_auth)])
-def dashboard_surveys():
-    """Individual survey responses joined with user name/email for Tony's review."""
-    res = supabase.table("dashboard_survey_pre").select("*").limit(500).execute()
-    return res.data or []
 
 
 @app.get("/api/dashboard/safeguarding", dependencies=[Depends(require_dashboard_auth)])

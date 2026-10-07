@@ -128,7 +128,7 @@ export default function ChatWindow() {
 
     const stored = userStorage.get();
     if (!stored) {
-      // No account yet. Advice/report skip the questionnaire, so send those to
+      // No account yet. Advice/report skip the full sign-up, so send those to
       // the quick sign-in; anything else to the full wizard.
       if (intent === "advice" || intent === "report" || intent === "training") {
         router.replace(`/start?intent=${intent}`);

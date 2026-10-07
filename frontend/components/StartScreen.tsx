@@ -7,7 +7,7 @@ import QuickStartForm from "@/components/QuickStartForm";
 /**
  * Entry screen for the funnel — this is what the chat-widget bubble opens. With
  * no intent it shows the three choices: "Find a care home" goes to the full
- * questionnaire; the other two go to the lightweight quick sign-in. With
+ * sign-up; the other two go to the lightweight quick sign-in. With
  * ?intent=advice|report it renders that quick sign-in directly.
  *
  * (Direct visitors to the homepage see the same three options via

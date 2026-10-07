@@ -2,13 +2,12 @@
 
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { onboard, pingBackend, preloadInitialChat, submitSurvey, type SurveyAnswers } from "@/lib/api";
+import { onboard, pingBackend, preloadInitialChat } from "@/lib/api";
 import { userStorage } from "@/lib/storage";
 import Step1Personal, { emptyPersonal, type PersonalData } from "@/components/onboard/Step1Personal";
-import Step2Survey, { emptySurvey, type SurveyData } from "@/components/onboard/Step2Survey";
 import Step3Consent from "@/components/onboard/Step3Consent";
 
-type Step = 1 | 2 | 3;
+type Step = 1 | 2;
 
 export default function OnboardForm() {
   const router = useRouter();
@@ -25,12 +24,11 @@ export default function OnboardForm() {
 
   const [step, setStep] = useState<Step>(1);
   const [personal, setPersonal] = useState<PersonalData>(emptyPersonal);
-  const [survey, setSurvey] = useState<SurveyData>(emptySurvey);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // The school postcode is geocoded in the background WHILE the user fills
-  // the survey. This promise is stored from Step 1's onNext and awaited on
-  // Step 3 submit. For home-search it resolves immediately.
+  // The school postcode is geocoded in the background (kicked off by Step 1's
+  // onNext) and awaited on the final submit, so by the time the user consents
+  // it's usually ready. For home-search it resolves immediately.
   const [postcodePromise, setPostcodePromise] = useState<Promise<string> | null>(null);
   const [schoolError, setSchoolError] = useState<string | null>(null);
 
@@ -84,9 +82,9 @@ export default function OnboardForm() {
         utm_source: utmSource,
       });
 
-      // Save the session IMMEDIATELY, before the survey, so a survey blip can't
-      // strand the user with a server-side account but no local login (which
-      // would then make every retry hit "email already registered").
+      // Save the session IMMEDIATELY so a later blip can't strand the user with
+      // a server-side account but no local login (which would then make every
+      // retry hit "email already registered").
       userStorage.set({
         user_id: onboardRes.user_id,
         user_token: onboardRes.user_token,
@@ -95,19 +93,6 @@ export default function OnboardForm() {
         is_student: personal.isStudent ?? false,
         search_preference: personal.searchPreference ?? "home",
       });
-
-      // The baseline survey is best-effort: the account already exists, so a
-      // transient failure here must not block them or force a re-onboard.
-      try {
-        await submitSurvey(
-          onboardRes.user_id,
-          onboardRes.user_token,
-          survey as SurveyAnswers,
-          "pre"
-        );
-      } catch (surveyErr) {
-        console.warn("[onboard] survey submit failed, continuing:", surveyErr);
-      }
 
       // Preload the care-home search only when that's where they're headed, so
       // the LLM is processing during navigation and the result is ready the
@@ -130,8 +115,8 @@ export default function OnboardForm() {
       className="w-full max-w-md bg-white rounded-3xl shadow-xl border border-yopey-primary/20 p-6 md:p-8 space-y-5"
     >
       <div>
-        <div className="flex items-center gap-2 mb-3" aria-label={`Step ${step} of 3`}>
-          {[1, 2, 3].map((n) => (
+        <div className="flex items-center gap-2 mb-3" aria-label={`Step ${step} of 2`}>
+          {[1, 2].map((n) => (
             <div
               key={n}
               className={`h-2 flex-1 rounded-full transition ${
@@ -142,13 +127,11 @@ export default function OnboardForm() {
         </div>
         <h1 className="text-2xl md:text-3xl font-extrabold text-yopey-ink">
           {step === 1 && "About you"}
-          {step === 2 && "A quick survey"}
-          {step === 3 && "Almost there"}
+          {step === 2 && "Almost there"}
         </h1>
         <p className="mt-1 text-gray-600 text-sm">
           {step === 1 && "We'll find care homes near you — with walking distance and time where available."}
-          {step === 2 && "Ten quick questions — won't take more than a couple of minutes."}
-          {step === 3 && "One last check, then we'll find care homes near you."}
+          {step === 2 && "One last check, then we'll find care homes near you."}
         </p>
       </div>
 
@@ -166,20 +149,11 @@ export default function OnboardForm() {
       )}
 
       {step === 2 && (
-        <Step2Survey
-          data={survey}
-          setData={setSurvey}
-          onNext={() => setStep(3)}
-          onBack={() => setStep(1)}
-        />
-      )}
-
-      {step === 3 && (
         <Step3Consent
           submitting={submitting}
           error={error}
           onSubmit={handleFinalSubmit}
-          onBack={() => setStep(2)}
+          onBack={() => setStep(1)}
         />
       )}
     </form>

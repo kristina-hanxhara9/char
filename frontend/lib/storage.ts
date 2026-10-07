@@ -4,7 +4,7 @@ const TOKEN_KEY = "yopey_dash_token";
 
 export type StoredUser = {
   user_id: string;
-  user_token: string;  // HMAC token from /api/onboard — required for /api/user/{id} + /api/survey
+  user_token: string;  // HMAC token from /api/onboard — required for /api/user/{id} GET+DELETE
   first_name: string;
   postcode?: string;
   is_student?: boolean;

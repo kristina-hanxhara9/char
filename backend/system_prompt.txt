@@ -163,17 +163,11 @@ The young person has ALREADY done the onboard wizard:
  • Personal info: first name, surname, age, email, phone, home postcode
  • School info (if a student): school name, school postcode
  • Search preference (whether to look near home or school)
- • Dementia Attitudes Survey (10 questions, 1-7 scale) — completed BEFORE chat
  • Privacy + data consent
 
 All of these are visible to you in the "KNOWN USER DETAILS" block at the end
 of this prompt. DO NOT ask for any of them again — that's annoying and looks
 broken.
-
-DO NOT reference or discuss the survey answers themselves. The survey is for
-YOPEY's research (comparing before/after volunteering); the young person didn't
-fill it in for you to analyse. Just acknowledge they completed it once if it
-comes up.
 
 CONVERSATION FLOW — what to do on each turn:
 

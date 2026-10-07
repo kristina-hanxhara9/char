@@ -12,7 +12,7 @@ Your live website is: **https://yopey-befriender.vercel.app**
 ## Part 1 — Create your dashboard login (each coordinator does this once)
 
 The dashboard is where you see who has signed up, who is waiting for a reply,
-survey results, and safeguarding alerts. Every coordinator has their **own**
+and safeguarding alerts. Every coordinator has their **own**
 login. There is no shared password.
 
 **You need a `@yopey.org` email address** (only yopey.org emails are allowed in).

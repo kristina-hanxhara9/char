@@ -63,7 +63,6 @@ const USER_GUIDE: Section[] = [
           "You need to be 16 or over to use it.",
           "Open the YOPEY Befriender website and press “Find a care home”.",
           "Answer a few quick questions (first name, age, email, and your postcode or school).",
-          "At signup you also answer a short survey about attitudes to dementia, which takes a couple of minutes.",
           "Then just start typing to the assistant to begin a conversation.",
           "If you leave and come back, you can pick up again through a link YOPEY emails you.",
           "It may also appear as a chat bubble on partner websites that have added it.",
@@ -109,7 +108,7 @@ const OWNER_GUIDE: Section[] = [
       {
         items: [
           "In one sentence: it helps a young person find a local care home and drafts a first introduction email that they then send themselves, in minutes, instead of YOPEY doing this outreach by manual phone calls.",
-          "It also gates signups to age 16 and over, runs a short Dementia Attitudes survey at signup (to measure how volunteering changes attitudes), and can be embedded on partner websites as a floating chat bubble.",
+          "It also gates signups to age 16 and over, and can be embedded on partner websites as a floating chat bubble.",
         ],
       },
       {
@@ -173,7 +172,7 @@ const OWNER_GUIDE: Section[] = [
       {
         heading: "Where to look",
         items: [
-          "The coordinator dashboard at /dashboard: signups, who is waiting for a reply, who is stuck, matches, survey scores, and a Safeguarding panel.",
+          "The coordinator dashboard at /dashboard: signups, who is waiting for a reply, who is stuck, matches, and a Safeguarding panel.",
           "You can open each young person's full conversation log from the dashboard.",
         ],
       },
@@ -222,7 +221,7 @@ const OWNER_GUIDE: Section[] = [
       {
         heading: "What data it can and cannot access",
         items: [
-          "CAN: the young person's onboarding details (name, age, email, postcode or school), their chat, survey answers, visit reports, and care home activity.",
+          "CAN: the young person's onboarding details (name, age, email, postcode or school), their chat, visit reports, and care home activity.",
           "CANNOT: anything outside this app. It does not browse the user's device or accounts. The guide helper on this page has NO access to user data, it only knows this help text.",
         ],
       },

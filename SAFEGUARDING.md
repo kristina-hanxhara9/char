@@ -128,9 +128,9 @@ contacts the bot ever surfaces are the named helplines above.
   (`Step3Consent`) so eligibility is a deliberate declaration, not just a number.
   DPA 2018 sets the UK age of consent for information-society services at 13; we
   sit well above it.
-- **Only what's needed:** name, age, email, phone, postcode, school name, the
-  10-question Dementia Attitudes survey, and chat content. Each purpose is
-  disclosed in the privacy notice (`/privacy`), satisfying UK GDPR Art 13.
+- **Only what's needed:** name, age, email, phone, postcode, school name, and
+  chat content. Each purpose is disclosed in the privacy notice (`/privacy`),
+  satisfying UK GDPR Art 13.
 - **Location minimisation:** only the **postcode** is stored (the search anchor),
   never a full address. It is never shared with care homes or third parties, is
   redacted in logs (outward code only), and is deleted with the account.
@@ -148,7 +148,7 @@ contacts the bot ever surfaces are the named helplines above.
   to train its models. **Keep the key on the paid tier** — the free tier's
   terms allow Google to use submitted data to improve its products.
 - **Right to erasure:** any young person can delete their entire record
-  (account, chat history, contacts, surveys, alerts) from `/privacy`. The DSL
+  (account, chat history, contacts, alerts) from `/privacy`. The DSL
   can also delete from the dashboard.
 - **PII in logs:** server logs redact email (`sa***@x.com`), postcode (outward
   code only), school name (initials), and user ids (first 8 chars). Render

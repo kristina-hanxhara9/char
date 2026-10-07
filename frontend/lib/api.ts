@@ -31,8 +31,7 @@ export type OnboardPayload = {
   is_student: boolean;
   school_name?: string;
   // If we resolved the school postcode client-side (via /api/geocode-school
-  // running in the background during the survey), pass it here so the backend
-  // doesn't re-geocode.
+  // running in the background), pass it here so the backend doesn't re-geocode.
   school_postcode?: string;
   search_preference: "home" | "school";
   utm_source?: string;
@@ -43,19 +42,6 @@ export type OnboardResponse = {
   user_token: string;  // HMAC token — store in localStorage, send as X-User-Token
   first_name: string;
   postcode?: string | null;
-};
-
-export type SurveyAnswers = {
-  q1_afraid: number;
-  q2_confident: number;
-  q3_comfortable_touching: number;
-  q4_uncomfortable: number;
-  q5_different_needs: number;
-  q6_past_history: number;
-  q7_relaxed: number;
-  q8_feel_kindness: number;
-  q9_frustrated: number;
-  q10_difficult_behaviour: number;
 };
 
 export async function requestReturnLink(email: string): Promise<void> {
@@ -127,27 +113,6 @@ export async function geocodeSchool(name: string): Promise<{ postcode: string }>
   return res.json();
 }
 
-export async function submitSurvey(
-  user_id: string,
-  user_token: string,
-  answers: SurveyAnswers,
-  survey_type: "pre" | "post" = "pre"
-): Promise<{ status: string }> {
-  const res = await apiFetch(`${API_URL}/api/survey`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-User-Token": user_token,
-    },
-    body: JSON.stringify({ user_id, survey_type, ...answers }),
-  });
-  if (!res.ok) {
-    const detail = await res.json().catch(() => ({}));
-    throw new Error(detail.detail || `Survey submit failed (${res.status})`);
-  }
-  return res.json();
-}
-
 export async function onboard(
   payload: OnboardPayload
 ): Promise<OnboardResponse> {
@@ -164,7 +129,7 @@ export async function onboard(
 }
 
 // Lightweight onboarding for the advice / visit-report routes — name + age +
-// email only, no postcode or survey. Returns the same session shape as onboard.
+// email only, no postcode. Returns the same session shape as onboard.
 export async function quickStart(payload: {
   first_name: string;
   age: number;

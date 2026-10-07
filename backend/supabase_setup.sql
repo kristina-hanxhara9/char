@@ -149,29 +149,7 @@ CREATE TABLE IF NOT EXISTS school_postcodes (
 ALTER TABLE school_postcodes ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION;
 ALTER TABLE school_postcodes ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION;
 
--- 8. SURVEY RESPONSES — Dementia Attitudes Scale (10 questions, Likert 1-7).
--- Pre-volunteering survey is taken on the onboard wizard. Post-volunteering
--- survey is the future trigger when a YB completes their journey.
-CREATE TABLE survey_responses (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-    survey_type TEXT NOT NULL CHECK (survey_type IN ('pre', 'post')),
-    q1_afraid INTEGER NOT NULL CHECK (q1_afraid BETWEEN 1 AND 7),
-    q2_confident INTEGER NOT NULL CHECK (q2_confident BETWEEN 1 AND 7),
-    q3_comfortable_touching INTEGER NOT NULL CHECK (q3_comfortable_touching BETWEEN 1 AND 7),
-    q4_uncomfortable INTEGER NOT NULL CHECK (q4_uncomfortable BETWEEN 1 AND 7),
-    q5_different_needs INTEGER NOT NULL CHECK (q5_different_needs BETWEEN 1 AND 7),
-    q6_past_history INTEGER NOT NULL CHECK (q6_past_history BETWEEN 1 AND 7),
-    q7_relaxed INTEGER NOT NULL CHECK (q7_relaxed BETWEEN 1 AND 7),
-    q8_feel_kindness INTEGER NOT NULL CHECK (q8_feel_kindness BETWEEN 1 AND 7),
-    q9_frustrated INTEGER NOT NULL CHECK (q9_frustrated BETWEEN 1 AND 7),
-    q10_difficult_behaviour INTEGER NOT NULL CHECK (q10_difficult_behaviour BETWEEN 1 AND 7),
-    completed_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE (user_id, survey_type)
-);
-CREATE INDEX idx_survey_responses_user ON survey_responses (user_id, survey_type);
-
--- 9. TRAINING RESOURCES — curated by Tony, surfaced by the bot during STEP 4.
+-- 8. TRAINING RESOURCES — curated by Tony, surfaced by the bot during STEP 4.
 -- The find_dementia_training tool web-searches for fresh ones; Tony reviews
 -- and inserts the keepers.
 CREATE TABLE training_resources (
@@ -194,21 +172,6 @@ INSERT INTO training_resources (name, url, description, estimated_minutes, is_fr
  ('Adria Thompson — Why we should talk about dementia', 'https://www.youtube.com/results?search_query=Adria+Thompson+Why+we+should+talk+about+dementia', 'YouTube + @belightcare on Instagram', 20, true),
  ('Bailey Greetham-Clark on Instagram', 'https://www.instagram.com/bailey_greetham', 'Watch how he chats with residents — joyful, natural style', 0, true),
  ('Ask your care home about their own training', NULL, 'Many homes offer manual handling / dementia awareness courses — take them', 0, true);
-
--- Dashboard view for Tony to see pre-survey scores
-CREATE VIEW dashboard_survey_pre AS
-SELECT u.id AS user_id,
-       u.first_name || ' ' || COALESCE(u.surname, '') AS full_name,
-       u.email, u.age, u.school_name,
-       sr.q1_afraid, sr.q2_confident, sr.q3_comfortable_touching,
-       sr.q4_uncomfortable, sr.q5_different_needs, sr.q6_past_history,
-       sr.q7_relaxed, sr.q8_feel_kindness, sr.q9_frustrated,
-       sr.q10_difficult_behaviour, sr.completed_at
-FROM survey_responses sr
-JOIN users u ON u.id = sr.user_id
-WHERE sr.survey_type = 'pre'
-ORDER BY sr.completed_at DESC;
-
 
 -- ============================================================
 -- DASHBOARD VIEWS
@@ -347,7 +310,6 @@ ALTER TABLE training_progress ENABLE ROW LEVEL SECURITY;
 ALTER TABLE care_home_emails ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_responses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE care_home_searches ENABLE ROW LEVEL SECURITY;
-ALTER TABLE survey_responses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE training_resources ENABLE ROW LEVEL SECURITY;
 ALTER TABLE safeguarding_alerts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE care_home_managers ENABLE ROW LEVEL SECURITY;
@@ -367,7 +329,6 @@ ALTER TABLE admin_users ENABLE ROW LEVEL SECURITY;
 -- security_invoker = on makes each view run as the CALLING role, so anon inherits
 -- its deny-all RLS (no rows) while the backend's service_role key keeps full
 -- access. Requires Postgres 15+ (the Supabase default).
-ALTER VIEW dashboard_survey_pre      SET (security_invoker = on);
 ALTER VIEW dashboard_overview        SET (security_invoker = on);
 ALTER VIEW dashboard_waiting         SET (security_invoker = on);
 ALTER VIEW dashboard_stuck           SET (security_invoker = on);

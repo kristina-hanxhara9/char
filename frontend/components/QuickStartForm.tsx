@@ -80,7 +80,7 @@ export default function QuickStartForm() {
       <div>
         <h1 className="text-2xl font-extrabold text-yopey-ink">{heading}</h1>
         <p className="mt-1 text-sm text-gray-600">
-          Just a couple of details and we&apos;ll jump straight in — no questionnaire
+          Just a couple of details and we&apos;ll jump straight in — no long form
           needed.
         </p>
       </div>

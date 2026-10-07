@@ -96,7 +96,7 @@ DO $$
 DECLARE v text;
 BEGIN
   FOREACH v IN ARRAY ARRAY[
-    'dashboard_survey_pre','dashboard_overview','dashboard_waiting',
+    'dashboard_overview','dashboard_waiting',
     'dashboard_stuck','dashboard_matched','dashboard_monthly_signups',
     'dashboard_all_users'
   ] LOOP

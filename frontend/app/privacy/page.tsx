@@ -56,12 +56,21 @@ export default function PrivacyPage() {
 
       <section className="max-w-3xl mx-auto px-6 md:px-10 py-6 prose prose-purple">
         <h1 className="text-3xl md:text-4xl font-extrabold text-yopey-ink mb-2">
-          Privacy & your data
+          Privacy &amp; your data on YOPEY&apos;s AI
         </h1>
         <p className="text-gray-600">
           YOPEY (registered charity 1145573) takes your privacy seriously, especially
-          because we work with young people. This page explains exactly what data we
-          collect, why, who sees it, and how to delete it.
+          because we work with young people. This page explains exactly what data this
+          AI collects, why, who sees it, and how to delete it. This should be read in
+          conjunction with YOPEY&apos;s main Privacy Notice and other policies here:{" "}
+          <a
+            href="https://yopeybefriender.org/privacy"
+            target="_blank"
+            rel="noreferrer"
+          >
+            yopeybefriender.org/privacy
+          </a>
+          .
         </p>
 
         <h2 className="text-xl font-bold mt-8 mb-2">What we collect</h2>
@@ -71,9 +80,10 @@ export default function PrivacyPage() {
             phone number, and home postcode.
           </li>
           <li>
-            <strong>About where you study</strong> (if you&apos;re in school /
-            college / uni): the name of your school and which postcode
-            you&apos;d like care homes searched near (school or home).
+            <strong>About where you study</strong> (if you&apos;re in education —
+            school / college / uni): the name of your school / college / uni and
+            which postcode you&apos;d like care homes searched near (your place of
+            education or home).
           </li>
           <li>
             <strong>From the chat</strong>: everything you type into the chatbot,
@@ -92,8 +102,8 @@ export default function PrivacyPage() {
           <li>Send you reminders if a care home hasn&apos;t replied (email).</li>
           <li>Send you welcome and training tips once you&apos;re accepted (email).</li>
           <li>
-            Help Tony (YOPEY&apos;s coordinator) see overall stats and check on people
-            who might need a nudge.
+            Help YOPEY&apos;s moderators see overall stats and check on people
+            who might need help.
           </li>
         </ul>
 
@@ -126,7 +136,8 @@ export default function PrivacyPage() {
           Care homes you contact will see the email you send them — but that&apos;s
           you sending it, not us, and the draft we prepare is signed with your{" "}
           <strong>name only</strong>: we don&apos;t put your email, phone, age or
-          postcode in it. A care home can reach you back through YOPEY.
+          postcode in it; that&apos;s up to you. A care home can also reach you back
+          through YOPEY.
         </p>
 
         <h2 className="text-xl font-bold mt-8 mb-2">How long we keep it</h2>
@@ -169,8 +180,8 @@ export default function PrivacyPage() {
 
         <h2 className="text-xl font-bold mt-8 mb-2">Contact</h2>
         <p className="text-gray-700">
-          Email <a href="mailto:hello@yopey.org">hello@yopey.org</a> or call 01440
-          821654. We&apos;ll reply within a few days.
+          Email <a href="mailto:hello@yopey.org">hello@yopey.org</a> or call 07711
+          255675. We&apos;ll reply within a few days.
         </p>
 
         <hr className="my-10 border-yopey-primary/20" />
@@ -178,9 +189,13 @@ export default function PrivacyPage() {
         <div className="bg-white rounded-2xl border border-yopey-primary/20 p-6">
           <h2 className="text-xl font-bold text-yopey-ink mb-2">Delete my data</h2>
           <p className="text-gray-700 mb-4">
-            This permanently removes your YOPEY account, every message you sent the
-            chatbot, every care home contact you logged, and every nudge you&apos;ve
-            received. It can&apos;t be undone.
+            This permanently removes your YOPEY account on YOPEY&apos;s AI, including
+            every message you sent the chatbot, every care home contact you logged,
+            and every nudge you&apos;ve received. It can&apos;t be undone. It does{" "}
+            <strong>not</strong> delete your profile on yopeybefriender.org, the
+            reports you have written, or the badges you have been awarded. If you want
+            those deleted too, email{" "}
+            <a href="mailto:tony@yopey.org">tony@yopey.org</a>.
           </p>
           {deleteResult ? (
             <div className="rounded-xl bg-green-50 border border-green-200 text-green-700 text-sm px-4 py-3">
@@ -203,7 +218,7 @@ export default function PrivacyPage() {
         </div>
 
         <p className="text-xs text-gray-500 mt-10 mb-6">
-          Last updated: June 2026. Registered charity 1145573.
+          Last updated: October 2026. Registered charity 1145573.
         </p>
       </section>
     </main>
